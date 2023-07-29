@@ -1,8 +1,11 @@
 const std = @import("std");
-const Allocator = std.mem.Allocator;
+const mem = std.mem;
+const Allocator = mem.Allocator;
+const assert = std.debug.assert;
 
 /// Configuration for the model
-const Config = extern struct {
+const ConfigReader = extern struct {
+    const Self = @This();
     dim: i32, // transformer dimension
     hidden_dim: i32, // for ffn layers
     n_layers: i32, // number of layers
@@ -10,6 +13,28 @@ const Config = extern struct {
     n_kv_heads: i32, // number of key/value heads (can be < query heads because of multiquery)
     vocab_size: i32, // vocabulary size, usually 256 (byte-level)
     seq_len: i32, // max sequence length
+
+    fn config(self: Self) Config {
+        return Config{
+            .dim = @intCast(self.dim),
+            .hidden_dim = @intCast(self.hidden_dim),
+            .n_layers = @intCast(self.n_layers),
+            .n_heads = @intCast(self.n_heads),
+            .n_kv_heads = @intCast(self.n_kv_heads),
+            .vocab_size = @intCast(self.vocab_size),
+            .seq_len = @intCast(self.seq_len),
+        };
+    }
+};
+
+const Config = struct {
+    dim: usize, // transformer dimension
+    hidden_dim: usize, // for ffn layers
+    n_layers: usize, // number of layers
+    n_heads: usize, // number of query heads
+    n_kv_heads: usize, // number of key/value heads (can be < query heads because of multiquery)
+    vocab_size: usize, // vocabulary size, usually 256 (byte-level)
+    seq_len: usize, // max sequence length
 };
 
 /// Weights for the model held as f32 manypointers. Need to look into if slices
@@ -33,13 +58,13 @@ const Weights = struct {
     // (optional) classifier weights for the logits, on the last layer
     wcls: [*]f32, // (vocab_size, dim)
 
-    fn init(config: *Config, data: []u8, shared_weights: bool) Weights {
-        const vocab_size: usize = @intCast(config.vocab_size);
-        const dim: usize = @intCast(config.dim);
-        const hidden_dim: usize = @intCast(config.hidden_dim);
-        const n_layers: usize = @intCast(config.n_layers);
-        const n_heads: usize = @intCast(config.n_heads);
-        const seq_len: usize = @intCast(config.seq_len);
+    fn init(config: *const Config, data: []u8, shared_weights: bool) Weights {
+        const vocab_size: usize = config.vocab_size;
+        const dim: usize = config.dim;
+        const hidden_dim: usize = config.hidden_dim;
+        const n_layers: usize = config.n_layers;
+        const n_heads: usize = config.n_heads;
+        const seq_len: usize = config.seq_len;
 
         var weights: Weights = undefined;
 
@@ -73,6 +98,10 @@ const Weights = struct {
         ptr += seq_len * head_size / 2;
         weights.wcls = if (shared_weights) weights.token_embedding_table else ptr;
 
+        //print content row
+        for (0..10) |i| {
+            std.debug.print("token_table[{d}]: {d}\n", .{ i, weights.token_embedding_table[i] });
+        }
         return weights;
     }
 };
@@ -111,6 +140,22 @@ const RunState = struct {
             .value_cache = try allocator.alloc(f32, config.n_layers * config.seq_len * config.dim),
         };
     }
+
+    fn deinit(self: *Self, allocator: Allocator) void {
+        allocator.free(self.x);
+        allocator.free(self.xb);
+        allocator.free(self.xb2);
+        allocator.free(self.hb);
+        allocator.free(self.hb2);
+        allocator.free(self.q);
+        allocator.free(self.k);
+        allocator.free(self.v);
+        allocator.free(self.att);
+        allocator.free(self.logits);
+        allocator.free(self.key_cache);
+        allocator.free(self.value_cache);
+        self.* = undefined;
+    }
 };
 
 /// A (vocab_size, token_len) array of tokens where each token is a string of
@@ -133,15 +178,69 @@ const Tokens = struct {
                 return error.UnexpectedEof;
             }
         }
-        //
-        // for (0..vocab_size) |i| {
-        //     std.debug.print("{any}\n", .{tokens.tokens[i]});
-        //     std.debug.print("{s}\n", .{tokens.tokens[i]});
-        // }
 
         return tokens;
     }
+
+    fn deinit(self: *Self, allocator: Allocator) void {
+        for (self.tokens) |token| {
+            allocator.free(token);
+        }
+        allocator.free(self.tokens);
+        self.* = undefined;
+    }
 };
+
+fn transformer(token: usize, pos: usize, config: *const Config, s: *RunState, w: *const Weights) void {
+    // convenience variables
+    const dim = config.dim;
+    const hidden_dim = config.hidden_dim;
+    _ = hidden_dim;
+    const head_size = dim / config.n_heads;
+    var x = s.x;
+
+    // copy the token embedding into x
+    const embedding_row = w.token_embedding_table[token * dim ..][0..dim];
+    @memcpy(x, embedding_row);
+
+    // pluck out the "pos" row of the freq_cis real and imaginary parts
+    const freq_cis_real_row = w.freq_cis_real[pos * head_size / 2 ..][0 .. head_size / 2];
+    const freq_cis_imag_row = w.freq_cis_imag[pos * head_size / 2 ..][0 .. head_size / 2];
+    _ = freq_cis_imag_row;
+    _ = freq_cis_real_row;
+
+    // forward all the layers
+    for (0..config.n_layers) |l| {
+        std.debug.print("layer {d}\n", .{l});
+
+        // attention rmsnorm
+        rmsnorm(s.xb, x, w.rms_att_weight[l * dim ..][0..dim]);
+        // print first 10 values
+        std.debug.print("rmsnorm: \n", .{});
+        for (0..10) |i| {
+            std.debug.print("xb[{d}]={d}\n", .{ i, s.xb[i] });
+        }
+    }
+}
+
+fn rmsnorm(o: []f32, x: []f32, w: []f32) void {
+    assert(o.len == x.len);
+    assert(o.len == w.len);
+
+    // sum of squares
+    var sum: f32 = 0.0;
+    for (x) |val| {
+        sum += val * val;
+    }
+    sum /= @floatFromInt(x.len);
+    sum += 1e-5;
+    sum = 1.0 / std.math.sqrt(sum);
+
+    // normalize and scale
+    for (0..o.len) |i| {
+        o[i] = x[i] * sum * w[i];
+    }
+}
 
 /// An array of tokens which are strings of bytes
 const bin_path = "stories15M.bin";
@@ -151,35 +250,54 @@ pub fn main() !void {
     defer arena.deinit();
     const allocator = arena.allocator();
 
+    // read the config from the checkpoint
     var checkpoint = try std.fs.cwd().openFile(bin_path, .{}); // close this by hand
-    var config: Config = try checkpoint.reader().readStruct(Config);
+    var config_read: ConfigReader = try checkpoint.reader().readStruct(ConfigReader);
     // negative vocab size is hacky way of signaling unshared weights. bit yikes.
-    const shared_weights: bool = config.vocab_size > 0;
-    config.vocab_size = try std.math.absInt(config.vocab_size);
+    const shared_weights: bool = config_read.vocab_size > 0;
+    config_read.vocab_size = try std.math.absInt(config_read.vocab_size);
     const file_size = (try checkpoint.stat()).size;
     checkpoint.close();
+    const config = config_read.config(); // convert to usize version
 
     std.debug.print("config: {any}\n", .{config});
     std.debug.print("shared weights: {any}\n", .{shared_weights});
 
+    // mmap the checkpoint to directly map the weights
     const mapped_checkpoint = try (std.fs.cwd().openFile(bin_path, .{}));
     defer mapped_checkpoint.close();
-    const data: []u8 = try std.os.mmap(null, file_size, std.os.linux.PROT.READ, std.os.linux.MAP.PRIVATE, mapped_checkpoint.handle, 0);
-    const weights = Weights.init(&config, data[@sizeOf(Config)..], shared_weights);
-    _ = weights;
+    const data: []align(mem.page_size) u8 = try std.os.mmap(null, file_size, std.os.linux.PROT.READ, std.os.linux.MAP.PRIVATE, mapped_checkpoint.handle, 0);
+    defer std.os.munmap(data);
+    const weights = Weights.init(&config, data[@sizeOf(ConfigReader)..], shared_weights);
 
-    const steps = config.seq_len;
-    _ = steps;
-
-    const tokens = tokenblk: {
+    // load the tokens for the model
+    var tokens = tokenblk: {
         var token_file = try std.fs.cwd().openFile("tokenizer.bin", .{});
         defer token_file.close();
         var buf_reader = std.io.bufferedReader(token_file.reader());
-        const tokens = try Tokens.init(buf_reader.reader(), allocator, @intCast(config.vocab_size));
+        const tokens = try Tokens.init(buf_reader.reader(), allocator, config.vocab_size);
         break :tokenblk tokens;
     };
-    _ = tokens;
+    defer tokens.deinit(allocator);
 
-    // var state = try RunState.init(allocator, &config);
-    // _ = state;
+    // initialize the run state for inference
+    var state = try RunState.init(allocator, &config);
+    defer state.deinit(allocator);
+
+    // set up a buffered writer for printing to stdout
+    var bufout = std.io.bufferedWriter(std.io.getStdOut().writer());
+    defer bufout.flush() catch {};
+    const stdout = bufout.writer();
+    _ = stdout;
+
+    var next: usize = undefined; // the next token as predicted by the model
+    var token: usize = 1; // 1 = <BOS> for llama2
+
+    // for now just do seq len steps
+    for (0..config.seq_len) |pos| {
+        transformer(token, pos, &config, &state, &weights);
+        // following BOS token (1), sentencepiece decoder strips any leading whitespace (see PR #89)
+        token = next;
+        break;
+    }
 }
