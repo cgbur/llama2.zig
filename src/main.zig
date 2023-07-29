@@ -3,7 +3,10 @@ const mem = std.mem;
 const Allocator = mem.Allocator;
 const assert = std.debug.assert;
 
-/// Configuration for the model
+const bin_path = "stories15M.bin";
+
+/// Configuration for the model that can be read from the file. Extern and i32
+/// to support the ints from python.
 const ConfigReader = extern struct {
     const Self = @This();
     dim: i32, // transformer dimension
@@ -27,6 +30,7 @@ const ConfigReader = extern struct {
     }
 };
 
+/// Actual config that is used with the values as usize for ease of use.
 const Config = struct {
     dim: usize, // transformer dimension
     hidden_dim: usize, // for ffn layers
@@ -98,10 +102,6 @@ const Weights = struct {
         ptr += seq_len * head_size / 2;
         weights.wcls = if (shared_weights) weights.token_embedding_table else ptr;
 
-        //print content row
-        for (0..10) |i| {
-            std.debug.print("token_table[{d}]: {d}\n", .{ i, weights.token_embedding_table[i] });
-        }
         return weights;
     }
 };
@@ -195,7 +195,6 @@ fn transformer(token: usize, pos: usize, config: *const Config, s: *RunState, w:
     // convenience variables
     const dim = config.dim;
     const hidden_dim = config.hidden_dim;
-    _ = hidden_dim;
     const head_size = dim / config.n_heads;
     var x = s.x;
 
@@ -209,25 +208,13 @@ fn transformer(token: usize, pos: usize, config: *const Config, s: *RunState, w:
 
     // forward all the layers
     for (0..config.n_layers) |l| {
-        std.debug.print("layer {d}\n", .{l});
-
         // attention rmsnorm
         rmsnorm(s.xb, x, w.rms_att_weight[l * dim ..][0..dim]);
-        // print first 10 values
-        std.debug.print("rmsnorm: \n", .{});
-        for (0..10) |i| {
-            std.debug.print("xb[{d}]={d}\n", .{ i, s.xb[i] });
-        }
 
         // qkv
-        matmul(s.q, s.xb, w.wq[l * dim * dim ..][0 .. dim * dim]);
-        // print
-        std.debug.print("q: \n", .{});
-        for (0..10) |i| {
-            std.debug.print("q[{d}]={d}\n", .{ i, s.q[i] });
-        }
-        matmul(s.k, s.xb, w.wk[l * dim * dim ..][0 .. dim * dim]);
-        matmul(s.v, s.xb, w.wv[l * dim * dim ..][0 .. dim * dim]);
+        matmul(s.q, s.xb, w.wq[l * dim * dim ..][0 .. dim * dim], dim, dim);
+        matmul(s.k, s.xb, w.wk[l * dim * dim ..][0 .. dim * dim], dim, dim);
+        matmul(s.v, s.xb, w.wv[l * dim * dim ..][0 .. dim * dim], dim, dim);
 
         // apply RoPE rotation to the q and k vectors for each head
         for (0..config.n_heads) |h| {
@@ -249,7 +236,89 @@ fn transformer(token: usize, pos: usize, config: *const Config, s: *RunState, w:
                 k[i + 1] = k0 * fci + k1 * fcr;
             }
         }
+
+        // save key,value at the current timestep to our kv cache
+        const loff = l * config.seq_len * dim; // kv cache offset
+        const key_cache_row = s.key_cache[loff + pos * dim ..][0..dim];
+        const value_cache_row = s.value_cache[loff + pos * dim ..][0..dim];
+        @memcpy(key_cache_row, s.k);
+        @memcpy(value_cache_row, s.v);
+
+        // attention
+        // TODO: parallelize this loop
+        for (0..config.n_heads) |h| {
+            // get the query vector for this head
+            const q = s.q[h * head_size ..][0..head_size];
+            // attention scores
+            const att = s.att[h * config.seq_len ..][0..config.seq_len];
+            // iterate over the timesteps, including the current one
+            for (0..pos + 1) |t| {
+                // get the key for this timestep
+                const k = s.key_cache[loff + t * dim + h * head_size ..][0..head_size];
+                // attn score as the dot of q and k
+                var score: f32 = 0.0;
+                for (0..head_size) |i| {
+                    score += q[i] * k[i];
+                }
+                score /= std.math.sqrt(@as(f32, @floatFromInt(head_size)));
+                // save the score
+                att[t] = score;
+            }
+
+            // softmax the scores to get the attention weights for 0..pos inclusive
+            softmax(att[0 .. pos + 1]);
+
+            // weighted sum of the value vectors store back into xb
+            const xb = s.xb[h * head_size ..][0..head_size];
+            @memset(xb, 0);
+            for (0..pos + 1) |t| {
+                // get the value vec for this head and timestep
+                const v = s.value_cache[loff + t * dim + h * head_size ..][0..head_size];
+                // get the attention weight for this timestep
+                const a = att[t];
+                // accumulate the weighted value vector into xb
+                for (0..head_size) |i| {
+                    xb[i] += v[i] * a;
+                }
+            }
+        }
+
+        // final matmul to get the output of attention
+        matmul(s.xb2, s.xb, w.wo[l * dim * dim ..][0 .. dim * dim], dim, dim);
+
+        // residual connection back into x
+        accum(x, s.xb2);
+
+        // ffn rsnorm
+        rmsnorm(s.xb, x, w.rms_ffn_weight[l * dim ..][0..dim]);
+
+        // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
+        // first calculate self.w1(x) and self.w3(x)
+        matmul(s.hb, s.xb, w.w1[l * dim * hidden_dim ..][0 .. dim * hidden_dim], dim, hidden_dim);
+        matmul(s.hb2, s.xb, w.w3[l * dim * hidden_dim ..][0 .. dim * hidden_dim], dim, hidden_dim);
+
+        // F.silu; silu(x)=x*σ(x),where σ(x) is the logistic sigmoid
+        for (0..hidden_dim) |i| {
+            s.hb[i] = s.hb[i] * (1.0 / (1.0 + std.math.exp(-s.hb[i])));
+        }
+
+        // elementwise multiply with w3(x)
+        for (0..hidden_dim) |i| {
+            s.hb[i] = s.hb[i] * s.hb2[i];
+        }
+
+        // final matmul to get the output of FFN
+        matmul(s.xb, s.hb, w.w2[l * dim * hidden_dim ..][0 .. hidden_dim * dim], hidden_dim, dim);
+
+        // residual connection
+        accum(x, s.xb);
     }
+
+    // final rmsnorm
+    rmsnorm(x, x, w.rms_final_weight[0..dim]);
+
+    // classify into logits
+    matmul(s.logits, x, w.wcls[0 .. dim * config.vocab_size], dim, config.vocab_size);
 }
 
 fn rmsnorm(o: []f32, x: []f32, w: []f32) void {
@@ -272,31 +341,69 @@ fn rmsnorm(o: []f32, x: []f32, w: []f32) void {
 }
 
 /// W (d,n) @ x (n,) -> xout (d,)
-/// W = [ w00 w01 w02 ]   x = [ x0 ]
-///     [ w10 w11 w12 ]       [ x1 ]
-///     [ w20 w21 w22 ]       [ x2 ]
-///
-/// xout = [ w00*x0 + w01*x1 + w02*x2 ]
-fn matmul(xout: []f32, x: []f32, W: []f32) void {
+fn matmul(xout: []f32, x: []f32, W: []f32, n: usize, d: usize) void {
     // TODO: heavily optimize this
-    assert(xout.len == W.len / x.len);
-    assert(W.len % x.len == 0);
+    assert(x.len == n);
+    assert(xout.len == d);
+    assert(W.len == n * d);
 
-    for (0..xout.len) |i| {
-        xout[i] = 0.0;
-        for (0..x.len) |j| {
-            xout[i] += W[i * x.len + j] * x[j];
+    for (0..d) |i| {
+        var sum: f32 = 0.0; // avoid false sharing in parallel
+        for (0..n) |j| {
+            sum += W[i * n + j] * x[j];
         }
+        xout[i] = sum;
     }
 }
 
-/// An array of tokens which are strings of bytes
-const bin_path = "stories15M.bin";
+fn softmax(x: []f32) void {
+    assert(x.len > 0);
+    // max of x for numerical stability
+    var max: f32 = x[0];
+    for (x[1..]) |val| {
+        if (val > max) {
+            max = val;
+        }
+    }
+    // exp and sum
+    var sum: f32 = 0.0;
+    for (x) |*val| {
+        val.* = std.math.exp(val.* - max);
+        sum += val.*;
+    }
+    // normalize
+    for (x) |*val| {
+        val.* /= sum;
+    }
+}
+
+fn accum(a: []f32, b: []f32) void {
+    assert(a.len == b.len);
+    for (0..a.len) |i| {
+        a[i] += b[i];
+    }
+}
+
+fn argmax(x: []f32) usize {
+    assert(x.len > 0);
+    var max: f32 = x[0];
+    var maxi: usize = 0;
+    for (1..x.len) |i| {
+        if (x[i] > max) {
+            max = x[i];
+            maxi = i;
+        }
+    }
+    return maxi;
+}
 
 pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
+
+    const args = try std.process.argsAlloc(allocator);
+    _ = args;
 
     // read the config from the checkpoint
     var checkpoint = try std.fs.cwd().openFile(bin_path, .{}); // close this by hand
@@ -309,7 +416,7 @@ pub fn main() !void {
     const config = config_read.config(); // convert to usize version
 
     std.debug.print("config: {any}\n", .{config});
-    std.debug.print("shared weights: {any}\n", .{shared_weights});
+    std.debug.print("shared weights: {any}\n\n", .{shared_weights});
 
     // mmap the checkpoint to directly map the weights
     const mapped_checkpoint = try (std.fs.cwd().openFile(bin_path, .{}));
@@ -332,20 +439,30 @@ pub fn main() !void {
     var state = try RunState.init(allocator, &config);
     defer state.deinit(allocator);
 
-    // set up a buffered writer for printing to stdout
-    var bufout = std.io.bufferedWriter(std.io.getStdOut().writer());
-    defer bufout.flush() catch {};
-    const stdout = bufout.writer();
-    _ = stdout;
+    var stdout = std.io.getStdOut().writer();
 
     var next: usize = undefined; // the next token as predicted by the model
     var token: usize = 1; // 1 = <BOS> for llama2
+    var timer: ?std.time.Timer = null;
 
     // for now just do seq len steps
     for (0..config.seq_len) |pos| {
         transformer(token, pos, &config, &state, &weights);
-        // following BOS token (1), sentencepiece decoder strips any leading whitespace (see PR #89)
+        next = argmax(state.logits);
+        // print the token
+        var token_str = tokens.tokens[next];
+        try stdout.print("{s}", .{token_str});
         token = next;
-        break;
+
+        // if timer is null, start it
+        if (timer == null) {
+            timer = try std.time.Timer.start();
+        }
     }
+    const time = timer.?.read();
+    const tokens_per_ms = @as(f64, @floatFromInt(config.seq_len - 1)) / @as(f64, @floatFromInt(time / std.time.ns_per_ms));
+    const tokens_per_sec = tokens_per_ms * 1000.0;
+
+    // print tokens per second
+    try stdout.print("\n{d} tokens per second\n", .{tokens_per_sec});
 }
