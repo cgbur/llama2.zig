@@ -206,8 +206,6 @@ fn transformer(token: usize, pos: usize, config: *const Config, s: *RunState, w:
     // pluck out the "pos" row of the freq_cis real and imaginary parts
     const freq_cis_real_row = w.freq_cis_real[pos * head_size / 2 ..][0 .. head_size / 2];
     const freq_cis_imag_row = w.freq_cis_imag[pos * head_size / 2 ..][0 .. head_size / 2];
-    _ = freq_cis_imag_row;
-    _ = freq_cis_real_row;
 
     // forward all the layers
     for (0..config.n_layers) |l| {
@@ -219,6 +217,37 @@ fn transformer(token: usize, pos: usize, config: *const Config, s: *RunState, w:
         std.debug.print("rmsnorm: \n", .{});
         for (0..10) |i| {
             std.debug.print("xb[{d}]={d}\n", .{ i, s.xb[i] });
+        }
+
+        // qkv
+        matmul(s.q, s.xb, w.wq[l * dim * dim ..][0 .. dim * dim]);
+        // print
+        std.debug.print("q: \n", .{});
+        for (0..10) |i| {
+            std.debug.print("q[{d}]={d}\n", .{ i, s.q[i] });
+        }
+        matmul(s.k, s.xb, w.wk[l * dim * dim ..][0 .. dim * dim]);
+        matmul(s.v, s.xb, w.wv[l * dim * dim ..][0 .. dim * dim]);
+
+        // apply RoPE rotation to the q and k vectors for each head
+        for (0..config.n_heads) |h| {
+            // get the q and k vectors for this head
+            const q = s.q[h * head_size ..][0..head_size];
+            const k = s.k[h * head_size ..][0..head_size];
+            // apply the rotation
+            var i: usize = 0;
+            while (i < head_size) : (i += 2) {
+                const q0 = q[i];
+                const q1 = q[i + 1];
+                const k0 = k[i];
+                const k1 = k[i + 1];
+                const fcr = freq_cis_real_row[i / 2];
+                const fci = freq_cis_imag_row[i / 2];
+                q[i] = q0 * fcr - q1 * fci;
+                q[i + 1] = q0 * fci + q1 * fcr;
+                k[i] = k0 * fcr - k1 * fci;
+                k[i + 1] = k0 * fci + k1 * fcr;
+            }
         }
     }
 }
@@ -239,6 +268,25 @@ fn rmsnorm(o: []f32, x: []f32, w: []f32) void {
     // normalize and scale
     for (0..o.len) |i| {
         o[i] = x[i] * sum * w[i];
+    }
+}
+
+/// W (d,n) @ x (n,) -> xout (d,)
+/// W = [ w00 w01 w02 ]   x = [ x0 ]
+///     [ w10 w11 w12 ]       [ x1 ]
+///     [ w20 w21 w22 ]       [ x2 ]
+///
+/// xout = [ w00*x0 + w01*x1 + w02*x2 ]
+fn matmul(xout: []f32, x: []f32, W: []f32) void {
+    // TODO: heavily optimize this
+    assert(xout.len == W.len / x.len);
+    assert(W.len % x.len == 0);
+
+    for (0..xout.len) |i| {
+        xout[i] = 0.0;
+        for (0..x.len) |j| {
+            xout[i] += W[i * x.len + j] * x[j];
+        }
     }
 }
 
