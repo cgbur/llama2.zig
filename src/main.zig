@@ -379,17 +379,18 @@ fn vector_dot_product(comptime vector_width: usize, x: []const f32, y: []const f
 
     // do the bulk of the work with SIMD
     var sum: @Vector(vector_width, f32) = @splat(0.0);
-    for (0..vec_len) |i| {
-        const offset = i * vector_width;
+    var offset: usize = 0;
+    for (0..vec_len) |_| {
         const xvec: @Vector(vector_width, f32) = x[offset..][0..vector_width].*;
         const yvec: @Vector(vector_width, f32) = y[offset..][0..vector_width].*;
         sum += xvec * yvec;
+        offset += vector_width;
     }
 
     // handle the last few elements with normal scalar ops
     var sum_rem: f32 = 0.0;
     for (0..vec_rem) |i| {
-        sum_rem += x[vec_len * vector_width + i] * y[vec_len * vector_width + i];
+        sum_rem += x[offset + i] * y[offset + i];
     }
 
     // reduce the SIMD vector to a scalar
