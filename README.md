@@ -27,7 +27,7 @@ zig build run -Doptimize=ReleaseFast -- stories15M.bin 0.9
 - \[ \] Support tokenization for prompting support
 - \[ \] Make parallel and faster
 - \[ \] Add the python to generate the checkpoints here
-- \[ \] understand why `@setFloatMode(std.builtin.FloatMode.Strict);` is not working
+- \[ \] understand why `@setFloatMode(std.builtin.FloatMode.Optimized);` is not working
 
 ## Contributing
 
