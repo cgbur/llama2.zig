@@ -10,8 +10,8 @@ complete or always up to date with the latest llama2.c. Pull requests are
 welcome. The long term goal is to have a fast, portable, and easy to use
 implementation of the llama2 model architecture. An emphasis is placed on
 simplicity and readability of the code where it does not impact performance
-significantly. A SIMD implementation of the `matmul` function has been
-implemented using the Zig `@Vector` feature for a ~4x speedup. See the
+significantly. A SIMD implementations some core functions have been implemented
+using the Zig `@Vector` feature for a ~4x speedup. See the
 [performance](#performance) section for more details.
 
 `stories15.bin` is a model checkpoint file for a 15M parameter model trained on
