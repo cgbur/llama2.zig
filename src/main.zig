@@ -345,7 +345,7 @@ fn rmsnorm(o: []f32, x: []f32, w: []f32) void {
 
 /// W (d,n) @ x (n,) -> xout (d,)
 ///
-/// This is a basic matrix multiplication function implementation. Matrices
+/// This is a SIMD matrix multiplication function implementation. Matrices
 /// dimensions are inferred from the lengths of the slices. xout must have same
 /// length as the number of rows in W. x must have same length as the number of
 /// columns in W. The layout of W is row-major.
@@ -358,19 +358,45 @@ fn rmsnorm(o: []f32, x: []f32, w: []f32) void {
 /// +---------+     +---------+     +---------+
 ///     W                x             xout
 ///
-fn matmul(xout: []f32, x: []f32, W: []f32) void {
+fn matmul(xout: []f32, x: []const f32, w: []const f32) void {
     // This one function accounts for ~90% of the total runtime.
+    @setFloatMode(std.builtin.FloatMode.Optimized);
     const d = xout.len;
     const n = x.len;
-    assert(W.len == n * d);
+    assert(w.len == n * d);
+    assert(w.len > 0);
 
     for (0..d) |i| {
-        var sum: f32 = 0.0; // avoid false sharing in parallel
-        for (0..n) |j| {
-            sum += W[i * n + j] * x[j];
-        }
-        xout[i] = sum;
+        const wrow = w[i * n ..][0..n]; // row i of W
+        xout[i] = vector_sum_row(8, wrow, x);
     }
+}
+
+/// Computes the vector addition of two vectors and then accumulates the result
+/// into a scalar. Handles the case where the vector length is not a multiple
+/// of the SIMD vector width.
+inline fn vector_sum_row(comptime vector_width: usize, x: []const f32, y: []const f32) f32 {
+    assert(x.len == y.len);
+    const vec_len = x.len / vector_width; // num of SIMD vectors
+    const vec_rem = x.len % vector_width; // num of f32 in the last SIMD vector
+
+    // do the bulk of the work with SIMD
+    var sum: @Vector(vector_width, f32) = @splat(0.0);
+    for (0..vec_len) |i| {
+        const offset = i * vector_width;
+        const xvec: @Vector(vector_width, f32) = x[offset..][0..vector_width].*;
+        const yvec: @Vector(vector_width, f32) = y[offset..][0..vector_width].*;
+        sum += xvec * yvec;
+    }
+
+    // handle the last few elements with normal scalar ops
+    var sum_rem: f32 = 0.0;
+    for (0..vec_rem) |i| {
+        sum_rem += x[vec_len * vector_width + i] * y[vec_len * vector_width + i];
+    }
+
+    // reduce the SIMD vector to a scalar
+    return @reduce(.Add, sum) + sum_rem;
 }
 
 fn softmax(x: []f32) void {
@@ -522,4 +548,15 @@ pub fn main() !void {
 
     // print tokens per second
     std.debug.print("\n\n{d} tokens per second\n", .{tokens_per_sec});
+}
+
+test "matrix_multiplies" {
+    var w = [_]f32{ 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0 };
+    var x = [_]f32{ 1.0, 2.0, 3.0 };
+    var xout = [_]f32{ 0.0, 0.0, 0.0 };
+
+    matmul(&xout, &x, &w);
+    try std.testing.expect(xout[0] == 1.0 + 4.0 + 9.0);
+    try std.testing.expect(xout[1] == 4.0 + 10.0 + 18.0);
+    try std.testing.expect(xout[2] == 7.0 + 16.0 + 27.0);
 }
