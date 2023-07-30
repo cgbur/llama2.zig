@@ -1,35 +1,36 @@
 # llama2.zig
 
 This is the Zig version of [llama2.c](https://github.com/karpathy/llama2.c) by
-Andrej Karpathy. This runs inference for the
+Andrej Karpathy. It runs inference for the
 [llama2](https://github.com/facebookresearch/llama) model architecture recently
 published by Meta.
 
-This is a work in progress side project and as such will likely not be feature
-complete or always up to date with the latest llama2.c. Pull requests are
-welcome. The long term goal is to have a fast, portable, and easy to use
-implementation of the llama2 model architecture. An emphasis is placed on
-simplicity and readability of the code where it does not impact performance
-significantly. A SIMD implementations some core functions have been implemented
-using the Zig `@Vector` feature for a ~4x speedup. See the
-[performance](#performance) section for more details.
+As a work in progress side project, it may not always be feature complete or
+up-to-date with the latest version of llama2.c. However, contributions and pull
+requests are greatly appreciated. The ultimate goal is to create a fast,
+portable, and user-friendly implementation of the llama2 model architecture.
+The code prioritizes simplicity and readability without sacrificing
+performance. Certain core functions have SIMD implementations using the Zig
+`@Vector` feature, which provides a ~4x speed increase. For more details,
+please refer to the [performance](#performance) section.
 
-`stories15.bin` is a model checkpoint file for a 15M parameter model trained on
-the tiny stories dataset. See the llama2.c repo for how this is generated. The
-tokenizer.bin file from that repo is out of date and will be ported here
-eventually.
+The `stories15.bin` file is a model checkpoint for a 15M parameter model that
+was trained on the tiny stories dataset. The method for generating this file
+can be found in the llama2.c repo. The tokenizer.bin file from that repo is
+currently out of date but will be ported here in due course.
 
 ## Usage
 
-After cloning the repo, you can run inference with:
+After cloning the repo, run the following command for inference:
 
 ```sh
 zig build run -Doptimize=ReleaseFast -- stories15M.bin 0.9
 ```
 
-# Performance
+## Performance
 
-The following benchmarks were run on a AMD Ryzen 9 5900X 12-Core Processor.
+The benchmarks provided below were executed on an AMD Ryzen 9 5900X 12-Core
+Processor.
 
 | Implementation                                    | Tokens/s |
 | ------------------------------------------------- | -------- |
@@ -39,10 +40,11 @@ The following benchmarks were run on a AMD Ryzen 9 5900X 12-Core Processor.
 
 ## Todo
 
-- \[ \] Support tokenization for prompting support
-- \[ \] Add the python to generate the checkpoints here
-- \[ \] Parallelize multi-head attention
+- \[ \] Add tokenization support for prompt handling
+- \[ \] Incorporate the Python script used to generate checkpoints
+- \[ \] Parallelize multi-head attention process
 
 ## Contributing
 
-Contributions are welcome. Please open an issue or pull request.
+Any form of contribution is welcome. Feel free to open an issue or create a
+pull request.
