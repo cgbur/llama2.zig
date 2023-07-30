@@ -215,9 +215,9 @@ fn transformer(token: usize, pos: usize, config: *const Config, s: *RunState, w:
         rmsnorm(s.xb, x, w.rms_att_weight[l * dim ..][0..dim]);
 
         // qkv
-        matmul(s.q, s.xb, w.wq[l * dim * dim ..][0 .. dim * dim], dim, dim);
-        matmul(s.k, s.xb, w.wk[l * dim * dim ..][0 .. dim * dim], dim, dim);
-        matmul(s.v, s.xb, w.wv[l * dim * dim ..][0 .. dim * dim], dim, dim);
+        matmul(s.q, s.xb, w.wq[l * dim * dim ..][0 .. dim * dim]);
+        matmul(s.k, s.xb, w.wk[l * dim * dim ..][0 .. dim * dim]);
+        matmul(s.v, s.xb, w.wv[l * dim * dim ..][0 .. dim * dim]);
 
         // apply RoPE rotation to the q and k vectors for each head
         for (0..config.n_heads) |h| {
@@ -287,7 +287,7 @@ fn transformer(token: usize, pos: usize, config: *const Config, s: *RunState, w:
         }
 
         // final matmul to get the output of attention
-        matmul(s.xb2, s.xb, w.wo[l * dim * dim ..][0 .. dim * dim], dim, dim);
+        matmul(s.xb2, s.xb, w.wo[l * dim * dim ..][0 .. dim * dim]);
 
         // residual connection back into x
         accum(x, s.xb2);
@@ -297,8 +297,8 @@ fn transformer(token: usize, pos: usize, config: *const Config, s: *RunState, w:
 
         // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
         // first calculate self.w1(x) and self.w3(x)
-        matmul(s.hb, s.xb, w.w1[l * dim * hidden_dim ..][0 .. dim * hidden_dim], dim, hidden_dim);
-        matmul(s.hb2, s.xb, w.w3[l * dim * hidden_dim ..][0 .. dim * hidden_dim], dim, hidden_dim);
+        matmul(s.hb, s.xb, w.w1[l * dim * hidden_dim ..][0 .. dim * hidden_dim]);
+        matmul(s.hb2, s.xb, w.w3[l * dim * hidden_dim ..][0 .. dim * hidden_dim]);
 
         // F.silu; silu(x)=x*σ(x),where σ(x) is the logistic sigmoid
         for (0..hidden_dim) |i| {
@@ -311,7 +311,7 @@ fn transformer(token: usize, pos: usize, config: *const Config, s: *RunState, w:
         }
 
         // final matmul to get the output of FFN
-        matmul(s.xb, s.hb, w.w2[l * dim * hidden_dim ..][0 .. hidden_dim * dim], hidden_dim, dim);
+        matmul(s.xb, s.hb, w.w2[l * dim * hidden_dim ..][0 .. hidden_dim * dim]);
 
         // residual connection
         accum(x, s.xb);
@@ -321,7 +321,7 @@ fn transformer(token: usize, pos: usize, config: *const Config, s: *RunState, w:
     rmsnorm(x, x, w.rms_final_weight[0..dim]);
 
     // classify into logits
-    matmul(s.logits, x, w.wcls[0 .. dim * config.vocab_size], dim, config.vocab_size);
+    matmul(s.logits, x, w.wcls[0 .. dim * config.vocab_size]);
 }
 
 fn rmsnorm(o: []f32, x: []f32, w: []f32) void {
@@ -344,10 +344,24 @@ fn rmsnorm(o: []f32, x: []f32, w: []f32) void {
 }
 
 /// W (d,n) @ x (n,) -> xout (d,)
-fn matmul(xout: []f32, x: []f32, W: []f32, n: usize, d: usize) void {
-    // TODO:  optimize this
-    assert(x.len == n);
-    assert(xout.len == d);
+///
+/// This is a basic matrix multiplication function implementation. Matrices
+/// dimensions are inferred from the lengths of the slices. xout must have same
+/// length as the number of rows in W. x must have same length as the number of
+/// columns in W. The layout of W is row-major.
+///
+///                  W
+/// +---------+     +---------+     +---------+
+/// |         |     |         |     |         |
+/// |   d x n |  @  |   n x 1 |  =  |   d x 1 |
+/// |         |     |         |     |         |
+/// +---------+     +---------+     +---------+
+///     W                x             xout
+///
+fn matmul(xout: []f32, x: []f32, W: []f32) void {
+    // This one function accounts for ~90% of the total runtime.
+    const d = xout.len;
+    const n = x.len;
     assert(W.len == n * d);
 
     for (0..d) |i| {
