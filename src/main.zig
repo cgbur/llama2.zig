@@ -3,8 +3,6 @@ const mem = std.mem;
 const Allocator = mem.Allocator;
 const assert = std.debug.assert;
 
-const bin_path = "stories15M.bin";
-
 /// Configuration for the model that can be read from the file. Extern and i32
 /// to support the ints from python.
 const ConfigReader = extern struct {
@@ -342,7 +340,7 @@ fn rmsnorm(o: []f32, x: []f32, w: []f32) void {
 
 /// W (d,n) @ x (n,) -> xout (d,)
 fn matmul(xout: []f32, x: []f32, W: []f32, n: usize, d: usize) void {
-    // TODO: heavily optimize this
+    // TODO:  optimize this
     assert(x.len == n);
     assert(xout.len == d);
     assert(W.len == n * d);
@@ -397,13 +395,42 @@ fn argmax(x: []f32) usize {
     return maxi;
 }
 
+fn sample(x: []f32) usize {
+    var rng = std.rand.DefaultPrng.init(0);
+    var r = rng.random().float(f32);
+    assert(x.len > 0);
+
+    var cdf: f32 = 0.0;
+    for (x, 0..) |*val, i| {
+        cdf += val.*;
+        if (r < cdf) {
+            return i;
+        }
+    }
+
+    return 0; // TODO
+}
+
 pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
     const args = try std.process.argsAlloc(allocator);
-    _ = args;
+    if (args.len < 2) {
+        std.debug.print("usage: llama2 <checkpoint.bin> [temperature=0.9]\n", .{});
+        return;
+    }
+
+    // grab the checkpoint path
+    const bin_path = args[1];
+
+    const DEFAULT_TEMPERATURE = 0.9;
+    var temperature: f32 = if (args.len > 2)
+        std.fmt.parseFloat(f32, args[2]) catch DEFAULT_TEMPERATURE
+    else
+        DEFAULT_TEMPERATURE;
+    temperature = std.math.clamp(temperature, 0.0, 1.0);
 
     // read the config from the checkpoint
     var checkpoint = try std.fs.cwd().openFile(bin_path, .{}); // close this by hand
@@ -416,7 +443,9 @@ pub fn main() !void {
     const config = config_read.config(); // convert to usize version
 
     std.debug.print("config: {any}\n", .{config});
-    std.debug.print("shared weights: {any}\n\n", .{shared_weights});
+    std.debug.print("shared weights: {any}\n", .{shared_weights});
+    std.debug.print("temperature: {d}\n", .{temperature});
+    std.debug.print("\n", .{});
 
     // mmap the checkpoint to directly map the weights
     const mapped_checkpoint = try (std.fs.cwd().openFile(bin_path, .{}));
@@ -448,8 +477,18 @@ pub fn main() !void {
     // for now just do seq len steps
     for (0..config.seq_len) |pos| {
         transformer(token, pos, &config, &state, &weights);
-        next = argmax(state.logits);
-        // print the token
+
+        if (temperature == 0.0) {
+            next = argmax(state.logits);
+        } else {
+            // apply the temperature to the logits
+            for (state.logits) |*val| val.* /= temperature;
+            // apply softmax to the logits to get the probabilities for next token
+            softmax(state.logits);
+            next = sample(state.logits);
+        }
+
+        // print the token, don't bother with the white space hack for now
         var token_str = tokens.tokens[next];
         try stdout.print("{s}", .{token_str});
         token = next;
@@ -464,5 +503,5 @@ pub fn main() !void {
     const tokens_per_sec = tokens_per_ms * 1000.0;
 
     // print tokens per second
-    try stdout.print("\n{d} tokens per second\n", .{tokens_per_sec});
+    std.debug.print("\n\n{d} tokens per second\n", .{tokens_per_sec});
 }
