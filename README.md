@@ -5,9 +5,10 @@ Andrej Karpathy. This runs inference for the
 [llama2](https://github.com/facebookresearch/llama) model architecture recently
 published by Meta.
 
-This is a work in progress side project that is incomplete and likely never to
-be feature complete or on par with the original C version. Already it has fallen
-behind in the few days since I started it.
+This is a work in progress side project that and as such will not be feature
+complete or always up to date with the latest llama2.c. Pull requests are
+welcome. The long term goal is to have a fast, portable, and easy to use
+implementation of the llama2 model architecture.
 
 `stories15.bin` is a model checkpoint file for a 15M parameter model trained on
 the tiny stories dataset. See the llama2.c repo for how this is generated. The
