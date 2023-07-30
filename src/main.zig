@@ -368,14 +368,14 @@ fn matmul(xout: []f32, x: []const f32, w: []const f32) void {
 
     for (0..d) |i| {
         const wrow = w[i * n ..][0..n]; // row i of W
-        xout[i] = vector_sum_row(8, wrow, x);
+        xout[i] = vector_dot_product(8, wrow, x);
     }
 }
 
 /// Computes the vector addition of two vectors and then accumulates the result
 /// into a scalar. Handles the case where the vector length is not a multiple
 /// of the SIMD vector width.
-inline fn vector_sum_row(comptime vector_width: usize, x: []const f32, y: []const f32) f32 {
+inline fn vector_dot_product(comptime vector_width: usize, x: []const f32, y: []const f32) f32 {
     assert(x.len == y.len);
     const vec_len = x.len / vector_width; // num of SIMD vectors
     const vec_rem = x.len % vector_width; // num of f32 in the last SIMD vector
