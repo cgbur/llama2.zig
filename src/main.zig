@@ -3,7 +3,7 @@ const mem = std.mem;
 const Allocator = mem.Allocator;
 const assert = std.debug.assert;
 
-const DEFAULT_VECTOR_WIDTH: usize = 8;
+const DEFAULT_VECTOR_WIDTH: usize = std.simd.suggestVectorSize(f32) orelse 4;
 
 comptime {
     // TODO: seems to not have any effect
@@ -361,6 +361,7 @@ fn matmul(xout: []f32, x: []const f32, w: []const f32) void {
     assert(w.len == n * d);
     assert(w.len > 0);
 
+    // unrolling doesn't seem to help
     for (0..d) |i| {
         const wrow = w[i * n ..][0..n]; // row i of W
         xout[i] = vector_dot_product(wrow, x);
@@ -534,6 +535,7 @@ pub fn main() !void {
     std.debug.print("config: {any}\n", .{config});
     std.debug.print("shared weights: {any}\n", .{shared_weights});
     std.debug.print("temperature: {d}\n", .{temperature});
+    std.debug.print("vector size: {d}\n", .{DEFAULT_VECTOR_WIDTH});
     std.debug.print("\n", .{});
 
     // mmap the checkpoint to directly map the weights
@@ -632,4 +634,15 @@ test "vector_weighted_sum_length_less_than_width_case" {
         var expected = (x[i] * y) + x[i];
         try std.testing.expect((xout[i] - expected) < 0.0001);
     }
+}
+
+test "softmax" {
+    var x = [_]f32{ 1.0, 2.0, 3.0, 4.0 };
+
+    softmax(&x);
+    var sum: f32 = 0.0;
+    for (0..x.len) |i| {
+        sum += x[i];
+    }
+    try std.testing.expect(sum == 1.0);
 }
