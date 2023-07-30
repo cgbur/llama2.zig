@@ -24,7 +24,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    if (optimize != std.builtin.OptimizeMode.Debug) {
+    const disable_strip = b.option(bool, "nostrip", "Disable stripping binaries, default is to strip release binaries") orelse false;
+
+    const is_debug = optimize == .Debug;
+    if (!is_debug and !disable_strip) {
         exe.strip = true;
     }
 
@@ -71,4 +74,11 @@ pub fn build(b: *std.Build) void {
     // running the unit tests.
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
+
+    const fmt_include_paths = &.{ "src", "build.zig" };
+    const do_fmt = b.addFmt(.{
+        .paths = fmt_include_paths,
+    });
+    b.step("fmt", "Modify source files in place to have conforming formatting")
+        .dependOn(&do_fmt.step);
 }
