@@ -261,7 +261,7 @@ fn transformer(token: usize, pos: usize, config: *const Config, s: *RunState, w:
                 // get the key for this timestep
                 const k = s.key_cache[loff + t * dim + h * head_size ..][0..head_size];
                 // attn score as the dot of q and k
-                var score: f32 = vector_dot_product(DEFAULT_VECTOR_WIDTH, q, k);
+                var score: f32 = vector_dot_product(q, k);
                 score /= std.math.sqrt(@as(f32, @floatFromInt(head_size)));
                 // save the score
                 att[t] = score;
@@ -279,7 +279,7 @@ fn transformer(token: usize, pos: usize, config: *const Config, s: *RunState, w:
                 // get the attention weight for this timestep
                 const a = att[t];
                 // accumulate the weighted value vector into xb
-                vector_weighted_sum(DEFAULT_VECTOR_WIDTH, xb, v, a);
+                vector_weighted_sum(xb, v, a);
             }
         }
 
@@ -303,9 +303,7 @@ fn transformer(token: usize, pos: usize, config: *const Config, s: *RunState, w:
         }
 
         // elementwise multiply with w3(x)
-        for (0..hidden_dim) |i| {
-            s.hb[i] = s.hb[i] * s.hb2[i];
-        }
+        vector_mul(s.hb, s.hb2);
 
         // final matmul to get the output of FFN
         matmul(s.xb, s.hb, w.w2[l * dim * hidden_dim ..][0 .. hidden_dim * dim]);
@@ -365,15 +363,16 @@ fn matmul(xout: []f32, x: []const f32, w: []const f32) void {
 
     for (0..d) |i| {
         const wrow = w[i * n ..][0..n]; // row i of W
-        xout[i] = vector_dot_product(DEFAULT_VECTOR_WIDTH, wrow, x);
+        xout[i] = vector_dot_product(wrow, x);
     }
 }
 
 /// Computes the vector addition of two vectors and then accumulates the result
 /// into a scalar. Handles the case where the vector length is not a multiple
 /// of the SIMD vector width.
-fn vector_dot_product(comptime vector_width: usize, x: []const f32, y: []const f32) f32 {
+fn vector_dot_product(x: []const f32, y: []const f32) f32 {
     assert(x.len == y.len);
+    const vector_width = DEFAULT_VECTOR_WIDTH;
     const vec_len = x.len / vector_width; // num of SIMD vectors
     const vec_rem = x.len % vector_width; // num of f32 in the last SIMD vector
 
@@ -397,10 +396,34 @@ fn vector_dot_product(comptime vector_width: usize, x: []const f32, y: []const f
     return @reduce(.Add, sum) + sum_rem;
 }
 
+/// Computes vector vector multiplication elementwise and stores the result in the first vector.
+fn vector_mul(x: []f32, y: []const f32) void {
+    assert(x.len == y.len);
+    const vector_width = DEFAULT_VECTOR_WIDTH;
+    const vec_len = x.len / vector_width; // num of SIMD vectors
+    const vec_rem = x.len % vector_width; // num of f32 in the last SIMD vector
+
+    // do the bulk of the work with SIMD
+    var offset: usize = 0;
+    for (0..vec_len) |_| {
+        var xvec: @Vector(vector_width, f32) = x[offset..][0..vector_width].*;
+        const yvec: @Vector(vector_width, f32) = y[offset..][0..vector_width].*;
+        xvec *= yvec;
+        x[offset..][0..vector_width].* = xvec;
+        offset += vector_width;
+    }
+
+    // handle the last few elements with normal scalar ops
+    for (0..vec_rem) |i| {
+        x[offset + i] *= y[offset + i];
+    }
+}
+
 /// Performs a weighted vector sum operation using SIMD for efficiency.
 /// The operation performed is xout = xout + x * y where x is a vector and y is a scalar.
-fn vector_weighted_sum(comptime vector_width: usize, xout: []f32, x: []const f32, y: f32) void {
+fn vector_weighted_sum(xout: []f32, x: []const f32, y: f32) void {
     assert(xout.len == x.len);
+    const vector_width = DEFAULT_VECTOR_WIDTH;
     const vec_len = x.len / vector_width; // num of SIMD vectors
     const vec_rem = x.len % vector_width; // num of f32 in the last SIMD vector
 
@@ -604,7 +627,7 @@ test "vector_weighted_sum_length_less_than_width_case" {
     var y: f32 = 3.0;
     var xout = [_]f32{ 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0 };
 
-    vector_weighted_sum(8, &xout, &x, y);
+    vector_weighted_sum(&xout, &x, y);
     for (0..xout.len) |i| {
         var expected = (x[i] * y) + x[i];
         try std.testing.expect((xout[i] - expected) < 0.0001);
