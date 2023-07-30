@@ -35,7 +35,7 @@ The following benchmarks were run on a AMD Ryzen 9 5900X 12-Core Processor.
 | ------------------------------------------------- | -------- |
 | llama2.c `make run`                               | 116      |
 | llama2.c `make runfast`                           | 375      |
-| llama2.zig `zig build run -Doptimize=ReleaseFast` | 425      |
+| llama2.zig `zig build run -Doptimize=ReleaseFast` | 447      |
 
 ## Todo
 
