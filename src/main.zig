@@ -3,6 +3,10 @@ const mem = std.mem;
 const Allocator = mem.Allocator;
 const assert = std.debug.assert;
 
+comptime {
+    @setFloatMode(std.builtin.FloatMode.Optimized);
+}
+
 /// Configuration for the model that can be read from the file. Extern and i32
 /// to support the ints from python.
 const ConfigReader = extern struct {
