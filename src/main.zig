@@ -396,9 +396,9 @@ fn argmax(x: []f32) usize {
 }
 
 fn sample(x: []f32) usize {
+    assert(x.len > 0);
     var rng = std.rand.DefaultPrng.init(0);
     var r = rng.random().float(f32);
-    assert(x.len > 0);
 
     var cdf: f32 = 0.0;
     for (x, 0..) |*val, i| {
@@ -407,8 +407,7 @@ fn sample(x: []f32) usize {
             return i;
         }
     }
-
-    return 0; // TODO
+    return x.len - 1;
 }
 
 pub fn main() !void {
