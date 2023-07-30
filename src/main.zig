@@ -259,10 +259,7 @@ fn transformer(token: usize, pos: usize, config: *const Config, s: *RunState, w:
                 // get the key for this timestep
                 const k = s.key_cache[loff + t * dim + h * head_size ..][0..head_size];
                 // attn score as the dot of q and k
-                var score: f32 = 0.0;
-                for (0..head_size) |i| {
-                    score += q[i] * k[i];
-                }
+                var score: f32 = vector_dot_product(8, q, k);
                 score /= std.math.sqrt(@as(f32, @floatFromInt(head_size)));
                 // save the score
                 att[t] = score;
@@ -375,7 +372,7 @@ fn matmul(xout: []f32, x: []const f32, w: []const f32) void {
 /// Computes the vector addition of two vectors and then accumulates the result
 /// into a scalar. Handles the case where the vector length is not a multiple
 /// of the SIMD vector width.
-inline fn vector_dot_product(comptime vector_width: usize, x: []const f32, y: []const f32) f32 {
+fn vector_dot_product(comptime vector_width: usize, x: []const f32, y: []const f32) f32 {
     assert(x.len == y.len);
     const vec_len = x.len / vector_width; // num of SIMD vectors
     const vec_rem = x.len % vector_width; // num of f32 in the last SIMD vector
@@ -559,4 +556,20 @@ test "matrix_multiplies" {
     try std.testing.expect(xout[0] == 1.0 + 4.0 + 9.0);
     try std.testing.expect(xout[1] == 4.0 + 10.0 + 18.0);
     try std.testing.expect(xout[2] == 7.0 + 16.0 + 27.0);
+}
+
+test "vector_length_less_than_width_case" {
+    var w = [_]f32{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24 };
+    var x = [_]f32{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 };
+    var xout = [_]f32{ 0, 0 };
+
+    matmul(&xout, &x, &w);
+
+    var expectedResult = [_]f32{ 0, 0 };
+    for (0..2) |i| {
+        for (0..12) |j| {
+            expectedResult[i] += w[i * 12 + j] * x[j];
+        }
+        try std.testing.expect(xout[i] == expectedResult[i]);
+    }
 }
