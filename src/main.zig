@@ -3,6 +3,8 @@ const mem = std.mem;
 const Allocator = mem.Allocator;
 const assert = std.debug.assert;
 
+const DEFAULT_VECTOR_WIDTH: usize = 8;
+
 comptime {
     // TODO: seems to not have any effect
     @setFloatMode(std.builtin.FloatMode.Optimized);
@@ -259,7 +261,7 @@ fn transformer(token: usize, pos: usize, config: *const Config, s: *RunState, w:
                 // get the key for this timestep
                 const k = s.key_cache[loff + t * dim + h * head_size ..][0..head_size];
                 // attn score as the dot of q and k
-                var score: f32 = vector_dot_product(8, q, k);
+                var score: f32 = vector_dot_product(DEFAULT_VECTOR_WIDTH, q, k);
                 score /= std.math.sqrt(@as(f32, @floatFromInt(head_size)));
                 // save the score
                 att[t] = score;
@@ -277,9 +279,7 @@ fn transformer(token: usize, pos: usize, config: *const Config, s: *RunState, w:
                 // get the attention weight for this timestep
                 const a = att[t];
                 // accumulate the weighted value vector into xb
-                for (0..head_size) |i| {
-                    xb[i] += v[i] * a;
-                }
+                vector_weighted_sum(DEFAULT_VECTOR_WIDTH, xb, v, a);
             }
         }
 
@@ -365,7 +365,7 @@ fn matmul(xout: []f32, x: []const f32, w: []const f32) void {
 
     for (0..d) |i| {
         const wrow = w[i * n ..][0..n]; // row i of W
-        xout[i] = vector_dot_product(8, wrow, x);
+        xout[i] = vector_dot_product(DEFAULT_VECTOR_WIDTH, wrow, x);
     }
 }
 
@@ -395,6 +395,30 @@ fn vector_dot_product(comptime vector_width: usize, x: []const f32, y: []const f
 
     // reduce the SIMD vector to a scalar
     return @reduce(.Add, sum) + sum_rem;
+}
+
+/// Performs a weighted vector sum operation using SIMD for efficiency.
+/// The operation performed is xout = xout + x * y where x is a vector and y is a scalar.
+fn vector_weighted_sum(comptime vector_width: usize, xout: []f32, x: []const f32, y: f32) void {
+    assert(xout.len == x.len);
+    const vec_len = x.len / vector_width; // num of SIMD vectors
+    const vec_rem = x.len % vector_width; // num of f32 in the last SIMD vector
+
+    // do the bulk of the work with SIMD
+    var offset: usize = 0;
+    const yvector: @Vector(vector_width, f32) = @splat(y);
+    for (0..vec_len) |_| {
+        var xoutvec: @Vector(vector_width, f32) = xout[offset..][0..vector_width].*;
+        const xvec: @Vector(vector_width, f32) = x[offset..][0..vector_width].*;
+        xoutvec += xvec * yvector;
+        xout[offset..][0..vector_width].* = xoutvec;
+        offset += vector_width;
+    }
+
+    // handle the last few elements with normal scalar operations
+    for (0..vec_rem) |i| {
+        xout[offset + i] += x[offset + i] * y;
+    }
 }
 
 fn softmax(x: []f32) void {
@@ -572,5 +596,17 @@ test "vector_length_less_than_width_case" {
             expectedResult[i] += w[i * 12 + j] * x[j];
         }
         try std.testing.expect(xout[i] == expectedResult[i]);
+    }
+}
+
+test "vector_weighted_sum_length_less_than_width_case" {
+    var x = [_]f32{ 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0 };
+    var y: f32 = 3.0;
+    var xout = [_]f32{ 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0 };
+
+    vector_weighted_sum(8, &xout, &x, y);
+    for (0..xout.len) |i| {
+        var expected = (x[i] * y) + x[i];
+        try std.testing.expect((xout[i] - expected) < 0.0001);
     }
 }
