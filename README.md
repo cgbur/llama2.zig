@@ -32,11 +32,24 @@ zig build run -Doptimize=ReleaseFast -- stories15M.bin 0.9
 The benchmarks provided below were executed on an AMD Ryzen 9 5900X 12-Core
 Processor.
 
-| Implementation                                    | Tokens/s |
-| ------------------------------------------------- | -------- |
-| llama2.c `make run`                               | 116      |
-| llama2.c `make runfast`                           | 375      |
-| llama2.zig `zig build run -Doptimize=ReleaseFast` | 525      |
+## Single-threaded
+
+| Implementation                                      | Tokens/s |
+| --------------------------------------------------- | -------- |
+| llama2.zig `zig build run -Doptimize=ReleaseFast`   | 525      |
+| llama2.c `make runfast`                             | 375      |
+| llama2.c `make run`                                 | 116      |
+| [llama2.rs](https://github.com/gaxler/llama2.rs) -r | 115      |
+
+## Multi-threaded
+
+This implementation currently does not support multithreading so is not
+included in the table below.
+
+| Implementation                                               | Tokens/s |
+| ------------------------------------------------------------ | -------- |
+| llama2.c `make runomp`                                       | 1564     |
+| [llama2.rs](https://github.com/gaxler/llama2.rs) -F parallel | 429      |
 
 ## Todo
 
