@@ -36,7 +36,7 @@ Processor.
 | ------------------------------------------------- | -------- |
 | llama2.c `make run`                               | 116      |
 | llama2.c `make runfast`                           | 375      |
-| llama2.zig `zig build run -Doptimize=ReleaseFast` | 466      |
+| llama2.zig `zig build run -Doptimize=ReleaseFast` | 482      |
 
 ## Todo
 

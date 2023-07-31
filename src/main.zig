@@ -4,6 +4,7 @@ const Allocator = mem.Allocator;
 const assert = std.debug.assert;
 
 const DEFAULT_VECTOR_WIDTH: usize = std.simd.suggestVectorSize(f32) orelse 4;
+const simd_align = @alignOf(@Vector(DEFAULT_VECTOR_WIDTH, f32));
 
 comptime {
     // TODO: seems to not have any effect
@@ -131,18 +132,18 @@ const RunState = struct {
 
     fn init(allocator: Allocator, config: *const Config) !Self {
         return Self{
-            .x = try allocator.alloc(f32, config.dim),
-            .xb = try allocator.alloc(f32, config.dim),
-            .xb2 = try allocator.alloc(f32, config.dim),
-            .hb = try allocator.alloc(f32, config.hidden_dim),
-            .hb2 = try allocator.alloc(f32, config.hidden_dim),
-            .q = try allocator.alloc(f32, config.dim),
-            .k = try allocator.alloc(f32, config.dim),
-            .v = try allocator.alloc(f32, config.dim),
-            .att = try allocator.alloc(f32, config.n_heads * config.seq_len),
-            .logits = try allocator.alloc(f32, config.vocab_size),
-            .key_cache = try allocator.alloc(f32, config.n_layers * config.seq_len * config.dim),
-            .value_cache = try allocator.alloc(f32, config.n_layers * config.seq_len * config.dim),
+            .x = try allocator.alignedAlloc(f32, simd_align, config.dim),
+            .xb = try allocator.alignedAlloc(f32, simd_align, config.dim),
+            .xb2 = try allocator.alignedAlloc(f32, simd_align, config.dim),
+            .hb = try allocator.alignedAlloc(f32, simd_align, config.hidden_dim),
+            .hb2 = try allocator.alignedAlloc(f32, simd_align, config.hidden_dim),
+            .q = try allocator.alignedAlloc(f32, simd_align, config.dim),
+            .k = try allocator.alignedAlloc(f32, simd_align, config.dim),
+            .v = try allocator.alignedAlloc(f32, simd_align, config.dim),
+            .att = try allocator.alignedAlloc(f32, simd_align, config.n_heads * config.seq_len),
+            .logits = try allocator.alignedAlloc(f32, simd_align, config.vocab_size),
+            .key_cache = try allocator.alignedAlloc(f32, simd_align, config.n_layers * config.seq_len * config.dim),
+            .value_cache = try allocator.alignedAlloc(f32, simd_align, config.n_layers * config.seq_len * config.dim),
         };
     }
 
