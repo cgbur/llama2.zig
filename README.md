@@ -48,3 +48,12 @@ Processor.
 
 Any form of contribution is welcome. Feel free to open an issue or create a
 pull request.
+
+# Credits
+
+- [Andrej Karpathy](https://github.com/karpathy) for the original llama2.c
+  implementation
+- [Foundation42](https://github.com/Foundation42) for opening a
+  [PR](https://github.com/karpathy/llama2.c/pull/94/files) on the llama2.c repo
+  that was the inspiration for aligned memory allocation and fused matrix
+  multiplication.
