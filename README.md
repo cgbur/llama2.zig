@@ -11,7 +11,7 @@ requests are greatly appreciated. The ultimate goal is to create a fast,
 portable, and user-friendly implementation of the llama2 model architecture.
 The code prioritizes simplicity and readability without sacrificing
 performance. Certain core functions have SIMD implementations using the Zig
-`@Vector` feature, which provides a ~4x speed increase. For more details,
+`@Vector` feature, which provides a ~5x speed increase. For more details,
 please refer to the [performance](#performance) section.
 
 The `stories15.bin` file is a model checkpoint for a 15M parameter model that
@@ -36,7 +36,7 @@ Processor.
 | ------------------------------------------------- | -------- |
 | llama2.c `make run`                               | 116      |
 | llama2.c `make runfast`                           | 375      |
-| llama2.zig `zig build run -Doptimize=ReleaseFast` | 482      |
+| llama2.zig `zig build run -Doptimize=ReleaseFast` | 525      |
 
 ## Todo
 
