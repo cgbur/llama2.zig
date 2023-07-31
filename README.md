@@ -47,7 +47,8 @@ Processor.
 ## Contributing
 
 Any form of contribution is welcome. Feel free to open an issue or create a
-pull request.
+pull request. If you are contributing optimizations, please provide benchmarks
+and/or performance comparisons as well as the code to reproduce them.
 
 # Credits
 
