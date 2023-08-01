@@ -437,10 +437,7 @@ fn matmul_fused(comptime N: usize, outs: [N][]f32, x: []const f32, ws: [N][]cons
         }
 
         // Initialize sums
-        var sums: [N]@Vector(vector_width, f32) = undefined;
-        inline for (0..N) |j| {
-            sums[j] = @splat(0.0);
-        }
+        var sums: [N]@Vector(vector_width, f32) = [1]@Vector(vector_width, f32){@splat(0.0)} ** N;
 
         var offset: usize = 0;
         for (0..vec_len) |_| {
@@ -453,10 +450,7 @@ fn matmul_fused(comptime N: usize, outs: [N][]f32, x: []const f32, ws: [N][]cons
         }
 
         // process remaining elements with scalar ops
-        var sums_rem: [N]f32 = undefined;
-        inline for (0..N) |j| {
-            sums_rem[j] = 0.0;
-        }
+        var sums_rem: [N]f32 = [1]f32{0.0} ** N;
         for (0..vec_rem) |a| {
             inline for (0..N) |j| {
                 sums_rem[j] += x[offset + a] * wrows[j][offset + a];
