@@ -29,6 +29,14 @@ zig build run -Doptimize=ReleaseFast -- stories15M.bin 0.9
 
 ## Performance
 
+The single largest speed increase came from writing a SIMD version of matrix
+multiplication using the Zig `@Vector` feature. This was an immediate jump from
+around 115 tokens/s to 430 tokens/s. Notable speed increases also came from:
+
+- `comptime` magic to generate fused matrix multiplication
+- Vector aligned memory allocation
+- Using SIMD versions of other core functions
+
 The benchmarks provided below were executed on an AMD Ryzen 9 5900X 12-Core
 Processor.
 
