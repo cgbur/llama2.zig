@@ -42,22 +42,78 @@ Processor.
 
 ## Single-threaded
 
-| Implementation                                        | Tokens/s |
-| ----------------------------------------------------- | -------- |
-| llama2.zig `zig build run -Doptimize=ReleaseFast`     | 525      |
-| llama2.c `make runfast`                               | 375      |
-| llama2.c `make run`                                   | 116      |
-| [llama2.rs](https://github.com/gaxler/llama2.rs) `-r` | 115      |
+| Implementation                                    | Tokens/s |
+| ------------------------------------------------- | -------- |
+| llama2.zig `zig build run -Doptimize=ReleaseFast` | 525      |
+| llama2.c `make runfast -march=native`             | 511      |
+| llama2.c `make runfast`                           | 375      |
+| llama2.c `make run -march=native`                 | 122      |
+| llama2.c `make run`                               | 116      |
+| [llama2.rs](https://github.com/gaxler/llama2.rs)  | 115      |
+
+For llama2.rs, `target-cpu=native` was passed via RUSTFLAGS and the following
+was added to the Cargo.toml file:
 
 ## Multi-threaded
 
 This implementation currently does not support multithreading so is not
 included in the table below.
 
-| Implementation                                                 | Tokens/s |
-| -------------------------------------------------------------- | -------- |
-| llama2.c `make runomp`                                         | 1564     |
-| [llama2.rs](https://github.com/gaxler/llama2.rs) `-F parallel` | 429      |
+| Implementation                                   | Tokens/s |
+| ------------------------------------------------ | -------- |
+| llama2.c `make runomp`                           | 1564     |
+| [llama2.rs](https://github.com/gaxler/llama2.rs) | 441      |
+
+### Benchmark configuration
+
+#### llama2.zig
+
+```sh
+zig build run -Doptimize=ReleaseFast -- stories15M.bin 0.9
+```
+
+```sh
+zig version -> 0.11.0-dev.4315+f5239677e
+```
+
+#### llama2.c
+
+```sh
+ ./run stories15M.bin 0.9
+```
+
+```sh
+CC = gcc
+
+.PHONY: runfast
+runfast: run.c
+	$(CC) -Ofast -o run run.c -lm -march=native
+
+
+.PHONY: run
+run: run.c
+	$(CC) -O3 -o run run.c -lm -march=native
+
+
+.PHONY: runomp
+runomp: run.c
+	$(CC) -Ofast -fopenmp -march=native run.c  -lm  -o run -march=native
+```
+
+#### llama2.rs
+
+```sh
+ RUSTFLAGS="-C target-cpu=native" cargo run -r -- stories15M.bin 0.9
+ RUSTFLAGS="-C target-cpu=native" cargo run -r -F parallel -- stories15M.bin 0.9
+```
+
+```toml
+[profile.release]
+codegen-units = 1
+lto = true
+panic = "abort"
+strip = "symbols"
+```
 
 ## Todo
 
