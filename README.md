@@ -1,5 +1,9 @@
 # llama2.zig
 
+<p align="center">
+  <img src="assets/llama_and_ziggy.jpg" width="250" height="250" alt="Cute Llama">
+</p>
+
 This is the Zig version of [llama2.c](https://github.com/karpathy/llama2.c) by
 Andrej Karpathy. It runs inference for the
 [llama2](https://github.com/facebookresearch/llama) model architecture recently
