@@ -2,7 +2,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const DEFAULT_VECTOR_WIDTH = 8;
 
-fn rmsnorm(o: []f32, x: []f32, w: []f32) void {
+fn rmsnorm_vectorized(o: []f32, x: []f32, w: []f32) void {
     assert(o.len == x.len);
     assert(o.len == w.len);
 
@@ -40,4 +40,56 @@ fn rmsnorm(o: []f32, x: []f32, w: []f32) void {
     for (0..vec_rem) |i| {
         o[offset + i] = x[offset + i] * sum * w[offset + i];
     }
+}
+
+fn rmsnorm(o: []f32, x: []f32, w: []f32) void {
+    assert(o.len == x.len);
+    assert(o.len == w.len);
+
+    // sum of squares
+    var sum: f32 = 0.0;
+    for (x) |val| {
+        sum += val * val;
+    }
+    sum /= @floatFromInt(x.len);
+    sum += 1e-5;
+    sum = 1.0 / std.math.sqrt(sum);
+
+    // normalize and scale
+    for (0..o.len) |i| {
+        o[i] = x[i] * sum * w[i];
+    }
+}
+
+pub fn main() !void {
+    // generate 1mb of f32 random data
+    var rng = std.rand.DefaultPrng.init(0);
+    var r = rng.random();
+    const size: usize = 2988;
+    const num_runs: usize = 100000;
+    var o: [size]f32 = undefined;
+    var x: [size]f32 = undefined;
+    var w: [size]f32 = undefined;
+
+    for (0..size) |i| {
+        o[i] = r.float(f32);
+        x[i] = r.float(f32);
+        w[i] = r.float(f32);
+    }
+
+    var timer = try std.time.Timer.start();
+    timer.reset();
+    for (0..num_runs) |_| {
+        rmsnorm(&o, &x, &w);
+    }
+    const softmax_ns: u64 = timer.read();
+
+    timer.reset();
+    for (0..num_runs) |_| {
+        rmsnorm_vectorized(&o, &x, &w);
+    }
+    const softmax_vectored_ns: u64 = timer.read();
+
+    std.debug.print("{:15} ns/rmsnorm\n", .{softmax_ns / num_runs});
+    std.debug.print("{:15} ns/rmsnorm_vectored\n", .{softmax_vectored_ns / num_runs});
 }

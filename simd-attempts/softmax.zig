@@ -81,6 +81,7 @@ pub fn main() !void {
     var rng = std.rand.DefaultPrng.init(0);
     var r = rng.random();
     const size: usize = 30_000;
+    const num_runs: usize = 10000;
     var data: [size]f32 = undefined;
     for (&data) |*val| {
         val.* = r.float(f32);
@@ -89,19 +90,19 @@ pub fn main() !void {
     var timer = try std.time.Timer.start();
     timer.reset();
     var data_copy: [size]f32 = undefined;
-    for (0..10000) |_| {
+    for (0..num_runs) |_| {
         @memcpy(&data_copy, &data);
         softmax(&data_copy);
     }
     const softmax_ns: u64 = timer.read();
 
     timer.reset();
-    for (0..10000) |_| {
+    for (0..num_runs) |_| {
         @memcpy(&data_copy, &data);
         softmax_vectored(&data_copy);
     }
     const softmax_vectored_ns: u64 = timer.read();
 
-    std.debug.print("{:15} ns/softmax\n", .{softmax_ns / 100});
-    std.debug.print("{:15} ns/softmax_vectored\n", .{softmax_vectored_ns / 100});
+    std.debug.print("{:15} ns/softmax\n", .{softmax_ns / num_runs});
+    std.debug.print("{:15} ns/softmax_vectored\n", .{softmax_vectored_ns / num_runs});
 }
