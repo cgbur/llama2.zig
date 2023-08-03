@@ -575,7 +575,7 @@ pub fn main() !void {
 
     const args = try std.process.argsAlloc(allocator);
     if (args.len < 2) {
-        std.debug.print("usage: llama2 <checkpoint.bin> [temperature=0.9]\n", .{});
+        std.debug.print("usage: llama2 <checkpoint.bin> [temperature=0.9] [seq_len]\n", .{});
         return;
     }
 
@@ -598,6 +598,14 @@ pub fn main() !void {
     const file_size = (try checkpoint.stat()).size;
     checkpoint.close();
     const config = config_read.config(); // convert to usize version
+
+    const seq_len = seq_len_blk: {
+        const seq_len: usize = if (args.len > 3)
+            std.fmt.parseInt(usize, args[3], 10) catch config.seq_len
+        else
+            config.seq_len;
+        break :seq_len_blk std.math.clamp(seq_len, 1, config.seq_len);
+    };
 
     std.debug.print("config: {any}\n", .{config});
     std.debug.print("shared weights: {any}\n", .{shared_weights});
@@ -633,7 +641,7 @@ pub fn main() !void {
     var timer: ?std.time.Timer = null;
 
     // for now just do seq len steps
-    for (0..config.seq_len) |pos| {
+    for (0..seq_len) |pos| {
         transformer(token, pos, &config, &state, &weights);
 
         if (temperature == 0.0) {
@@ -657,7 +665,7 @@ pub fn main() !void {
         }
     }
     const time = timer.?.read();
-    const tokens_per_ms = @as(f64, @floatFromInt(config.seq_len - 1)) / @as(f64, @floatFromInt(time / std.time.ns_per_ms));
+    const tokens_per_ms = @as(f64, @floatFromInt(seq_len - 1)) / @as(f64, @floatFromInt(time / std.time.ns_per_ms));
     const tokens_per_sec = tokens_per_ms * 1000.0;
 
     // print tokens per second
