@@ -616,7 +616,7 @@ pub fn main() !void {
     // mmap the checkpoint to directly map the weights
     const mapped_checkpoint = try (std.fs.cwd().openFile(bin_path, .{}));
     defer mapped_checkpoint.close();
-    const data: []align(mem.page_size) u8 = try std.os.mmap(null, file_size, std.os.linux.PROT.READ, std.os.linux.MAP.PRIVATE, mapped_checkpoint.handle, 0);
+    const data: []align(mem.page_size) u8 = try std.os.mmap(null, file_size, std.os.PROT.READ, std.os.MAP.PRIVATE, mapped_checkpoint.handle, 0);
     defer std.os.munmap(data);
     const weights = Weights.init(&config, data[@sizeOf(ConfigReader)..], shared_weights);
 
