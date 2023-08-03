@@ -1,7 +1,7 @@
 # llama2.zig
 
 <p align="center">
-  <img src="assets/llama_and_ziggy.jpg" width="300" height="300" alt="Cute Llama">
+  <img src="assets/llama_and_ziggy.png" width="300" height="300" alt="Cute Llama">
 </p>
 
 This is the Zig version of [llama2.c](https://github.com/karpathy/llama2.c) by
