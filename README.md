@@ -46,17 +46,18 @@ Processor.
 
 ## Single-threaded
 
-| Implementation                                    | Tokens/s |
-| ------------------------------------------------- | -------- |
-| llama2.zig `zig build run -Doptimize=ReleaseFast` | 525      |
-| llama2.c `make runfast -march=native`             | 511      |
-| llama2.c `make runfast`                           | 375      |
-| llama2.c `make run -march=native`                 | 122      |
-| llama2.c `make run`                               | 116      |
-| [llama2.rs](https://github.com/gaxler/llama2.rs)  | 115      |
+| Implementation                                          | Tokens/s |
+| ------------------------------------------------------- | -------- |
+| llama2.zig (this repo)                                  | 525      |
+| llama2.c `make runfast -march=native`                   | 511      |
+| [llama2.zig](https://github.com/clebert/llama2.zig) [1] | 473      |
+| llama2.c `make runfast`                                 | 375      |
+| llama2.c `make run -march=native`                       | 122      |
+| llama2.c `make run`                                     | 116      |
+| [llama2.rs](https://github.com/gaxler/llama2.rs)        | 115      |
 
-For llama2.rs, `target-cpu=native` was passed via RUSTFLAGS and the following
-was added to the Cargo.toml file:
+[1] Only argmax token selection is supported in this implementation. In
+benchmarking this has shown to be faster than the sampling method.
 
 ## Multi-threaded
 
@@ -70,7 +71,10 @@ included in the table below.
 
 ### Benchmark configuration
 
-#### llama2.zig
+If possible all benchmarks were run with stories15M.bin and a temperature of
+0.9.
+
+#### llama2.zig (this repo)
 
 ```sh
 zig build run -Doptimize=ReleaseFast -- stories15M.bin 0.9
