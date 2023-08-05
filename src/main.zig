@@ -3,6 +3,7 @@ const mem = std.mem;
 const Allocator = mem.Allocator;
 const assert = std.debug.assert;
 const ThreadPool = std.Thread.Pool;
+const WaitGroup = std.Thread.WaitGroup;
 
 const DEFAULT_VECTOR_WIDTH: usize = std.simd.suggestVectorSize(f32) orelse 4;
 const simd_align = @alignOf(@Vector(DEFAULT_VECTOR_WIDTH, f32));
@@ -257,8 +258,6 @@ fn transformer(token: usize, pos: usize, config: *const Config, s: *RunState, w:
         @memcpy(value_cache_row, s.v);
 
         // attention
-
-        // TODO: parallelize this loop
         for (0..config.n_heads) |h| {
             // get the query vector for this head
             const q = s.q[h * head_size ..][0..head_size];
@@ -367,17 +366,7 @@ fn rmsnorm(o: []f32, x: []f32, w: []f32) void {
 ///     W                x             xout
 ///
 fn matmul(xout: []f32, x: []const f32, w: []const f32) void {
-    // This one function accounts for ~90% of the total runtime.
-    const d = xout.len;
-    const n = x.len;
-    assert(w.len == n * d);
-    assert(w.len > 0);
-
-    // unrolling doesn't seem to help
-    for (0..d) |i| {
-        const wrow = w[i * n ..][0..n]; // row i of W
-        xout[i] = vector_dot_product(wrow, x);
-    }
+    matmul_fused(1, [_][]f32{xout}, x, [_][]const f32{w});
 }
 
 /// Computes the vector addition of two vectors and then accumulates the result
@@ -423,45 +412,54 @@ fn matmul_fused(comptime N: usize, outs: [N][]f32, x: []const f32, ws: [N][]cons
         }
     }
 
+    const d = outs[0].len;
+    wait_group.reset();
+    defer wait_group.wait();
+    for (0..d) |i| {
+        wait_group.start();
+        // matmul_fused_worker(N, i, outs, x, ws, &wait_group);
+        pool.spawn(matmul_fused_worker, .{ N, i, outs, x, ws, &wait_group }) catch unreachable;
+    }
+}
+
+fn matmul_fused_worker(comptime N: usize, i: usize, outs: [N][]f32, x: []const f32, ws: [N][]const f32, wg: *WaitGroup) void {
+    defer wg.finish();
     const vector_width = DEFAULT_VECTOR_WIDTH;
     const vec_len = x.len / vector_width;
     const vec_rem = x.len % vector_width;
 
-    const d = outs[0].len;
     const n = x.len;
 
-    for (0..d) |i| {
-        // pick out rows of W
-        var wrows: [N][]const f32 = undefined;
+    // pick out rows of W
+    var wrows: [N][]const f32 = undefined;
+    inline for (0..N) |j| {
+        wrows[j] = ws[j][i * n ..][0..n];
+    }
+
+    // Initialize sums
+    var sums: [N]@Vector(vector_width, f32) = [1]@Vector(vector_width, f32){@splat(0.0)} ** N;
+
+    var offset: usize = 0;
+    for (0..vec_len) |_| {
+        const xvec: @Vector(vector_width, f32) = x[offset..][0..vector_width].*;
         inline for (0..N) |j| {
-            wrows[j] = ws[j][i * n ..][0..n];
+            const wvec: @Vector(vector_width, f32) = wrows[j][offset..][0..vector_width].*;
+            sums[j] += xvec * wvec;
         }
+        offset += vector_width;
+    }
 
-        // Initialize sums
-        var sums: [N]@Vector(vector_width, f32) = [1]@Vector(vector_width, f32){@splat(0.0)} ** N;
-
-        var offset: usize = 0;
-        for (0..vec_len) |_| {
-            const xvec: @Vector(vector_width, f32) = x[offset..][0..vector_width].*;
-            inline for (0..N) |j| {
-                const wvec: @Vector(vector_width, f32) = wrows[j][offset..][0..vector_width].*;
-                sums[j] += xvec * wvec;
-            }
-            offset += vector_width;
-        }
-
-        // process remaining elements with scalar ops
-        var sums_rem: [N]f32 = [1]f32{0.0} ** N;
-        for (0..vec_rem) |a| {
-            inline for (0..N) |j| {
-                sums_rem[j] += x[offset + a] * wrows[j][offset + a];
-            }
-        }
-
-        // reduce SIMD vector to scalar
+    // process remaining elements with scalar ops
+    var sums_rem: [N]f32 = [1]f32{0.0} ** N;
+    for (0..vec_rem) |a| {
         inline for (0..N) |j| {
-            outs[j][i] = @reduce(.Add, sums[j]) + sums_rem[j];
+            sums_rem[j] += x[offset + a] * wrows[j][offset + a];
         }
+    }
+
+    // reduce SIMD vector to scalar
+    inline for (0..N) |j| {
+        outs[j][i] = @reduce(.Add, sums[j]) + sums_rem[j];
     }
 }
 
@@ -569,6 +567,11 @@ fn sample(x: []f32) usize {
     return x.len - 1;
 }
 
+// Globals for parallelism, initialized in main ugly but for now. Better than
+// passing around to all the matmul functions.
+var pool: ThreadPool = undefined;
+var wait_group: std.Thread.WaitGroup = .{};
+
 pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -634,6 +637,10 @@ pub fn main() !void {
     // initialize the run state for inference
     var state = try RunState.init(allocator, &config);
     defer state.deinit(allocator);
+
+    // create a thread pool to parallelize the inference
+    try ThreadPool.init(&pool, .{ .allocator = allocator, .n_jobs = 4 });
+    defer pool.deinit();
 
     var stdout = std.io.getStdOut().writer();
 
