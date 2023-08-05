@@ -64,8 +64,8 @@ const Weights = struct {
     w3: [*]f32, // (layer, hidden_dim, dim)
     rms_final_weight: [*]f32, // (dim,)
     // freq_cis for RoPE relatively positional embeddings
-    freq_cis_real: [*]f32, // (seq_len, dim/2)
-    freq_cis_imag: [*]f32, // (seq_len, dim/2)
+    freq_cis_real: [*]f32, // (seq_len, head_size/2)
+    freq_cis_imag: [*]f32, // (seq_len, head_size/2)
     // (optional) classifier weights for the logits, on the last layer
     wcls: [*]f32, // (vocab_size, dim)
 
@@ -367,17 +367,18 @@ fn rmsnorm(o: []f32, x: []f32, w: []f32) void {
 ///     W                x             xout
 ///
 fn matmul(xout: []f32, x: []const f32, w: []const f32) void {
-    // This one function accounts for ~90% of the total runtime.
-    const d = xout.len;
-    const n = x.len;
-    assert(w.len == n * d);
-    assert(w.len > 0);
-
-    // unrolling doesn't seem to help
-    for (0..d) |i| {
-        const wrow = w[i * n ..][0..n]; // row i of W
-        xout[i] = vector_dot_product(wrow, x);
-    }
+    // // This one function accounts for ~90% of the total runtime.
+    // const d = xout.len;
+    // const n = x.len;
+    // assert(w.len == n * d);
+    // assert(w.len > 0);
+    //
+    // // unrolling doesn't seem to help
+    // for (0..d) |i| {
+    //     const wrow = w[i * n ..][0..n]; // row i of W
+    //     xout[i] = vector_dot_product(wrow, x);
+    // }
+    matmul_fused(1, [_][]f32{xout}, x, [_][]const f32{w});
 }
 
 /// Computes the vector addition of two vectors and then accumulates the result
