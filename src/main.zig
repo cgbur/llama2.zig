@@ -558,8 +558,8 @@ fn sample(x: []f32) usize {
     var r = rng.random().float(f32);
 
     var cdf: f32 = 0.0;
-    for (x, 0..) |*val, i| {
-        cdf += val.*;
+    for (x, 0..) |val, i| {
+        cdf += val;
         if (r < cdf) {
             return i;
         }
