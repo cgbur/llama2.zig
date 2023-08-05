@@ -2,6 +2,7 @@ const std = @import("std");
 const mem = std.mem;
 const Allocator = mem.Allocator;
 const assert = std.debug.assert;
+const ThreadPool = std.Thread.Pool;
 
 const DEFAULT_VECTOR_WIDTH: usize = std.simd.suggestVectorSize(f32) orelse 4;
 const simd_align = @alignOf(@Vector(DEFAULT_VECTOR_WIDTH, f32));
@@ -188,12 +189,11 @@ const Tokens = struct {
         return tokens;
     }
 
-    fn deinit(self: *Self, allocator: Allocator) void {
+    fn deinit(self: *const Self, allocator: Allocator) void {
         for (self.tokens) |token| {
             allocator.free(token);
         }
         allocator.free(self.tokens);
-        self.* = undefined;
     }
 };
 
@@ -257,6 +257,7 @@ fn transformer(token: usize, pos: usize, config: *const Config, s: *RunState, w:
         @memcpy(value_cache_row, s.v);
 
         // attention
+
         // TODO: parallelize this loop
         for (0..config.n_heads) |h| {
             // get the query vector for this head
@@ -621,7 +622,7 @@ pub fn main() !void {
     const weights = Weights.init(&config, data[@sizeOf(ConfigReader)..], shared_weights);
 
     // load the tokens for the model
-    var tokens = tokenblk: {
+    const tokens = tokenblk: {
         var token_file = try std.fs.cwd().openFile("tokenizer.bin", .{});
         defer token_file.close();
         var buf_reader = std.io.bufferedReader(token_file.reader());
