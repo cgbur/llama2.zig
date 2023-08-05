@@ -412,17 +412,31 @@ fn matmul_fused(comptime N: usize, outs: [N][]f32, x: []const f32, ws: [N][]cons
         }
     }
 
+    const num_threads = pools.len;
+    // number of rows we need to compute
     const d = outs[0].len;
+    // number of rows per worker
+    const d_per_worker = d / num_threads;
+    // number of rows left over
+    var d_rem = d % num_threads;
     wait_group.reset();
-    defer wait_group.wait();
-    for (0..d) |i| {
+    // distribute the work across threads giving the first few threads an extra row until we run out
+    var cur_row: usize = 0;
+    for (0..num_threads) |i| {
+        var i_start = cur_row;
+        var i_end = cur_row + d_per_worker;
+        if (d_rem > 0) {
+            i_end += 1;
+            d_rem -= 1;
+        }
+        cur_row = i_end;
         wait_group.start();
-        // matmul_fused_worker(N, i, outs, x, ws, &wait_group);
-        pool.spawn(matmul_fused_worker, .{ N, i, outs, x, ws, &wait_group }) catch unreachable;
+        pools[i].spawn(matmul_fused_worker, .{ N, i_start, i_end, outs, x, ws, &wait_group }) catch unreachable;
     }
+    wait_group.wait();
 }
 
-fn matmul_fused_worker(comptime N: usize, i: usize, outs: [N][]f32, x: []const f32, ws: [N][]const f32, wg: *WaitGroup) void {
+fn matmul_fused_worker(comptime N: usize, i_start: usize, i_end: usize, outs: [N][]f32, x: []const f32, ws: [N][]const f32, wg: *WaitGroup) void {
     defer wg.finish();
     const vector_width = DEFAULT_VECTOR_WIDTH;
     const vec_len = x.len / vector_width;
@@ -430,36 +444,38 @@ fn matmul_fused_worker(comptime N: usize, i: usize, outs: [N][]f32, x: []const f
 
     const n = x.len;
 
-    // pick out rows of W
-    var wrows: [N][]const f32 = undefined;
-    inline for (0..N) |j| {
-        wrows[j] = ws[j][i * n ..][0..n];
-    }
-
-    // Initialize sums
-    var sums: [N]@Vector(vector_width, f32) = [1]@Vector(vector_width, f32){@splat(0.0)} ** N;
-
-    var offset: usize = 0;
-    for (0..vec_len) |_| {
-        const xvec: @Vector(vector_width, f32) = x[offset..][0..vector_width].*;
+    for (i_start..i_end) |i| {
+        // pick out rows of W
+        var wrows: [N][]const f32 = undefined;
         inline for (0..N) |j| {
-            const wvec: @Vector(vector_width, f32) = wrows[j][offset..][0..vector_width].*;
-            sums[j] += xvec * wvec;
+            wrows[j] = ws[j][i * n ..][0..n];
         }
-        offset += vector_width;
-    }
 
-    // process remaining elements with scalar ops
-    var sums_rem: [N]f32 = [1]f32{0.0} ** N;
-    for (0..vec_rem) |a| {
+        // Initialize sums
+        var sums: [N]@Vector(vector_width, f32) = [1]@Vector(vector_width, f32){@splat(0.0)} ** N;
+
+        var offset: usize = 0;
+        for (0..vec_len) |_| {
+            const xvec: @Vector(vector_width, f32) = x[offset..][0..vector_width].*;
+            inline for (0..N) |j| {
+                const wvec: @Vector(vector_width, f32) = wrows[j][offset..][0..vector_width].*;
+                sums[j] += xvec * wvec;
+            }
+            offset += vector_width;
+        }
+
+        // process remaining elements with scalar ops
+        var sums_rem: [N]f32 = [1]f32{0.0} ** N;
+        for (0..vec_rem) |a| {
+            inline for (0..N) |j| {
+                sums_rem[j] += x[offset + a] * wrows[j][offset + a];
+            }
+        }
+
+        // reduce SIMD vector to scalar
         inline for (0..N) |j| {
-            sums_rem[j] += x[offset + a] * wrows[j][offset + a];
+            outs[j][i] = @reduce(.Add, sums[j]) + sums_rem[j];
         }
-    }
-
-    // reduce SIMD vector to scalar
-    inline for (0..N) |j| {
-        outs[j][i] = @reduce(.Add, sums[j]) + sums_rem[j];
     }
 }
 
@@ -569,7 +585,7 @@ fn sample(x: []f32) usize {
 
 // Globals for parallelism, initialized in main ugly but for now. Better than
 // passing around to all the matmul functions.
-var pool: ThreadPool = undefined;
+var pools: []ThreadPool = undefined;
 var wait_group: std.Thread.WaitGroup = .{};
 
 pub fn main() !void {
@@ -638,9 +654,17 @@ pub fn main() !void {
     var state = try RunState.init(allocator, &config);
     defer state.deinit(allocator);
 
+    // const num_threads = try std.Thread.getCpuCount();
+    const num_threads: usize = 4;
     // create a thread pool to parallelize the inference
-    try ThreadPool.init(&pool, .{ .allocator = allocator, .n_jobs = 4 });
-    defer pool.deinit();
+    pools = try allocator.alloc(ThreadPool, num_threads);
+    defer allocator.free(pools);
+    for (pools) |*thread| {
+        try ThreadPool.init(thread, .{ .allocator = allocator, .n_jobs = 1 });
+    }
+    defer for (pools) |*thread| {
+        thread.*.deinit();
+    };
 
     var stdout = std.io.getStdOut().writer();
 
