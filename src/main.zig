@@ -228,25 +228,20 @@ fn transformer(token: usize, pos: usize, config: *const Config, s: *RunState, w:
             w.wv[l * dim * dim ..][0 .. dim * dim],
         });
 
-        // apply RoPE rotation to the q and k vectors for each head
-        for (0..config.n_heads) |h| {
-            // get the q and k vectors for this head
-            const q = s.q[h * head_size ..][0..head_size];
-            const k = s.k[h * head_size ..][0..head_size];
-            // apply the rotation
-            var i: usize = 0;
-            while (i < head_size) : (i += 2) {
-                const q0 = q[i];
-                const q1 = q[i + 1];
-                const k0 = k[i];
-                const k1 = k[i + 1];
-                const fcr = freq_cis_real_row[i / 2];
-                const fci = freq_cis_imag_row[i / 2];
-                q[i] = q0 * fcr - q1 * fci;
-                q[i + 1] = q0 * fci + q1 * fcr;
-                k[i] = k0 * fcr - k1 * fci;
-                k[i + 1] = k0 * fci + k1 * fcr;
-            }
+        // RoPe relative positional encoding: complex-valued rotation of q and
+        // k by freq_cis in each head
+        var i: usize = 0;
+        while (i < dim) : (i += 2) {
+            const q0 = s.q[i];
+            const q1 = s.q[i + 1];
+            const k0 = s.k[i];
+            const k1 = s.k[i + 1];
+            const fcr = freq_cis_real_row[(i % head_size) / 2];
+            const fci = freq_cis_imag_row[(i % head_size) / 2];
+            s.q[i] = q0 * fcr - q1 * fci;
+            s.q[i + 1] = q0 * fci + q1 * fcr;
+            s.k[i] = k0 * fcr - k1 * fci;
+            s.k[i + 1] = k0 * fci + k1 * fcr;
         }
 
         // save key,value at the current timestep to our kv cache
@@ -257,8 +252,6 @@ fn transformer(token: usize, pos: usize, config: *const Config, s: *RunState, w:
         @memcpy(value_cache_row, s.v);
 
         // attention
-
-        // TODO: parallelize this loop
         for (0..config.n_heads) |h| {
             // get the query vector for this head
             const q = s.q[h * head_size ..][0..head_size];
@@ -311,8 +304,8 @@ fn transformer(token: usize, pos: usize, config: *const Config, s: *RunState, w:
         });
 
         // F.silu; silu(x)=x*σ(x),where σ(x) is the logistic sigmoid
-        for (0..hidden_dim) |i| {
-            s.hb[i] = s.hb[i] * (1.0 / (1.0 + std.math.exp(-s.hb[i])));
+        for (s.hb) |*v| {
+            v.* = v.* * (1.0 / (1.0 + std.math.exp(-v.*)));
         }
 
         // elementwise multiply with w3(x)
