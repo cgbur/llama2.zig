@@ -625,9 +625,11 @@ const usage_text: []const u8 =
     \\Usage:   llama2 <checkpoint> [options]
     \\Example: llama2 checkpoint.bin -n 256 -i "Once upon a time"
     \\Options:
-    \\ -t, --temperature <float>  temperature, default 1.0
-    \\ -p, --top-p <float>  p value in top-p (nucleus) sampling. default 0.9, 0 = off
-    \\ -n, --seq-len <int>    number of steps to run for, default 256. 0 = max_seq_len
+    \\ -h, --help               print this help message
+    \\ -t, --temperature <float> temperature, default 1.0
+    \\ -p, --top-p <float>      p value in top-p (nucleus) sampling. default 0.9, 0 = off
+    \\ -n, --seq-len <int>      number of steps to run for, default 256. 0 = max_seq_len
+    \\ -i, --input <string>     input text for the prompt, default ""
     \\
 ;
 
@@ -644,6 +646,7 @@ pub fn main() !void {
     }
 
     var bin_path: ?[]const u8 = null;
+    var input: ?[]const u8 = null;
     var temperature: f32 = 1.0;
     var top_p: f32 = 0.9;
     var seq_len: usize = 0;
@@ -701,6 +704,13 @@ pub fn main() !void {
                 std.process.exit(1);
             };
             top_p = std.math.clamp(top_p, 0.0, 1.0);
+        } else if (std.mem.eql(u8, arg, "-i") or std.mem.eql(u8, arg, "--input")) {
+            arg_i += 1;
+            if (arg_i >= args.len) {
+                std.debug.print("error: missing argument for input\n", .{});
+                std.process.exit(1);
+            }
+            input = args[arg_i];
         } else {
             try stdout.writeAll(usage_text);
             return std.process.cleanExit();
@@ -765,8 +775,16 @@ pub fn main() !void {
                 sample_top_p(state.logits, top_p, state.logits_indexed);
         }
 
-        // print the token, don't bother with the white space hack for now
-        var token_str = tokens.tokens[next];
+        // 1 = <BOS> which ends the sequence
+        if (next == 1) {
+            break;
+        }
+
+        // print the token, at the start of the sequence we don't want to print the space
+        var token_str = if (token == 1 and tokens.tokens[next][0] == ' ')
+            tokens.tokens[next][1..]
+        else
+            tokens.tokens[next];
         try stdout.print("{s}", .{token_str});
         token = next;
 
