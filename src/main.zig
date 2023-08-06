@@ -175,12 +175,18 @@ const Tokens = struct {
     const Self = @This();
 
     tokens: [][]u8,
+    scores: []f32,
+    max_token_len: u32,
 
+    // TODO: try using max token length to alloc single buffer for all tokens
     fn init(reader: anytype, allocator: Allocator, vocab_size: usize) !Tokens {
         var tokens: Tokens = undefined;
         tokens.tokens = try allocator.alloc([]u8, vocab_size);
+        tokens.scores = try allocator.alloc(f32, vocab_size);
+        tokens.max_token_len = try reader.readInt(@TypeOf(tokens.max_token_len), std.builtin.Endian.Little);
 
         for (0..vocab_size) |i| {
+            tokens.scores[i] = @bitCast(try reader.readInt(u32, std.builtin.Endian.Little));
             const token_len = try reader.readInt(u32, std.builtin.Endian.Little);
             tokens.tokens[i] = try allocator.alloc(u8, token_len);
             const read_amt = try reader.read(tokens.tokens[i]);
