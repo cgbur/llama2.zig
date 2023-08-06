@@ -270,13 +270,9 @@ const Tokens = struct {
             }
 
             if (best_idx) |best| {
-                // merge the best tokens
+                // merge the best token and shfit the rest of the tokens down
                 token_buf[best] = best_id;
-                // shift all the tokens after the merged token down one
-                // std.debug.print("before {any}\n", .{result});
                 std.mem.copyForwards(u32, token_buf[best + 1 ..], token_buf[best + 2 ..]);
-                // std.debug.print("after {any}\n", .{result});
-                // shrink the result array by one
                 token_buf_len -= 1;
             } else {
                 // if we didnt find any tokens to merge, we are done
