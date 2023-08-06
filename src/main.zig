@@ -203,6 +203,7 @@ const Tokens = struct {
             allocator.free(token);
         }
         allocator.free(self.tokens);
+        allocator.free(self.scores);
     }
 };
 
