@@ -205,6 +205,80 @@ const Tokens = struct {
         allocator.free(self.tokens);
         allocator.free(self.scores);
     }
+
+    /// Given a string, find the index of the token that matches it exactly. If
+    /// no token matches, returns none.
+    fn lookup(self: *const Self, str: []const u8) ?u32 {
+        for (self.tokens, 0..) |token, i| {
+            if (std.mem.eql(u8, token, str)) {
+                return @intCast(i);
+            }
+        }
+        return null;
+    }
+
+    fn encode(self: *const Tokens, input: []const u8, allocator: Allocator) ![]u32 {
+        var token_buf: []u32 = try allocator.alloc(u32, input.len); // worst case is every byte is a token
+        var token_buf_len: usize = token_buf.len;
+
+        const max_allowed_token_len = 128;
+        if (self.max_token_len > max_allowed_token_len) {
+            return error.TokensTooLong;
+        }
+
+        // need an allocator for doing string concatenation, used fixed buffer
+        // allocator so we dont need to allocate any memory
+        var buffer: [max_allowed_token_len]u8 = undefined;
+        var fba = std.heap.FixedBufferAllocator.init(&buffer);
+        const fixed_allocator = fba.allocator();
+
+        // first encode every byte as a token
+        for (input, token_buf) |byte, *token| {
+            token.* = self.lookup(&[1]u8{byte}) orelse return error.TokenNotFound;
+        }
+
+        while (true) {
+            var best_score: f32 = -1e10;
+            var best_id: u32 = 0;
+            var best_idx: ?usize = null;
+
+            // find the best token to merge
+            for (0..token_buf_len - 1) |i| {
+                // check if we are able to merge the token at i with the next token
+                const catted = try std.mem.concat(fixed_allocator, u8, &[_][]u8{
+                    self.tokens[token_buf[i]],
+                    self.tokens[token_buf[i + 1]],
+                });
+                defer fixed_allocator.free(catted);
+                if (self.lookup(catted)) |token_id| {
+                    if (self.scores[token_id] > best_score) {
+                        best_score = self.scores[token_id];
+                        best_id = token_id;
+                        best_idx = i;
+                    }
+                }
+            }
+
+            if (best_idx) |best| {
+                // merge the best tokens
+                token_buf[best] = best_id;
+                // shift all the tokens after the merged token down one
+                // std.debug.print("before {any}\n", .{result});
+                std.mem.copyForwards(u32, token_buf[best + 1 ..], token_buf[best + 2 ..]);
+                // std.debug.print("after {any}\n", .{result});
+                // shrink the result array by one
+                token_buf_len -= 1;
+            } else {
+                // if we didnt find any tokens to merge, we are done
+                break;
+            }
+        }
+
+        if (!allocator.resize(token_buf, token_buf_len)) {
+            return error.OutOfMemory;
+        }
+        return token_buf[0..token_buf_len];
+    }
 };
 
 fn transformer(token: usize, pos: usize, config: *const Config, s: *RunState, w: *const Weights) void {
@@ -633,6 +707,14 @@ const usage_text: []const u8 =
     \\
 ;
 
+fn load_tokens(path: []const u8, vocab_size: usize, allocator: Allocator) !Tokens {
+    var token_file = try std.fs.cwd().openFile(path, .{});
+    defer token_file.close();
+    var buf_reader = std.io.bufferedReader(token_file.reader());
+    const tokens = try Tokens.init(buf_reader.reader(), allocator, vocab_size);
+    return tokens;
+}
+
 pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -741,18 +823,22 @@ pub fn main() !void {
     const weights = Weights.init(&config, data[@sizeOf(ConfigReader)..], shared_weights);
 
     // load the tokens for the model
-    const tokens = tokenblk: {
-        var token_file = try std.fs.cwd().openFile("tokenizer.bin", .{});
-        defer token_file.close();
-        var buf_reader = std.io.bufferedReader(token_file.reader());
-        const tokens = try Tokens.init(buf_reader.reader(), allocator, config.vocab_size);
-        break :tokenblk tokens;
-    };
+    const tokens = try load_tokens("tokenizer.bin", config.vocab_size, allocator);
     defer tokens.deinit(allocator);
 
     // initialize the run state for inference
     var state = try RunState.init(allocator, &config);
     defer state.deinit(allocator);
+
+    // encode the prompt
+    var prompt: ?[]u32 = null;
+    var prompt_len: usize = 0; // avoid the double if later
+    defer if (prompt) |p| allocator.free(p);
+    if (input) |in| {
+        const encoded_input = try tokens.encode(in, allocator);
+        prompt_len = encoded_input.len;
+        prompt = encoded_input;
+    }
 
     var next: usize = undefined; // the next token as predicted by the model
     var token: usize = 1; // 1 = <BOS> for llama2
@@ -764,15 +850,20 @@ pub fn main() !void {
     for (0..seq_len) |pos| {
         transformer(token, pos, &config, &state, &weights);
 
-        if (temperature == 0.0) {
-            next = argmax(state.logits);
+        // if we have a prompt, we need to feed it in
+        if (pos < prompt_len) {
+            next = prompt.?[pos];
         } else {
-            for (state.logits) |*val| val.* /= temperature;
-            softmax(state.logits);
-            next = if (top_p == 0.0)
-                sample(state.logits)
-            else
-                sample_top_p(state.logits, top_p, state.logits_indexed);
+            if (temperature == 0.0) {
+                next = argmax(state.logits);
+            } else {
+                for (state.logits) |*val| val.* /= temperature;
+                softmax(state.logits);
+                next = if (top_p == 0.0)
+                    sample(state.logits)
+                else
+                    sample_top_p(state.logits, top_p, state.logits_indexed);
+            }
         }
 
         // 1 = <BOS> which ends the sequence
@@ -781,7 +872,7 @@ pub fn main() !void {
         }
 
         // print the token, at the start of the sequence we don't want to print the space
-        var token_str = if (token == 1 and tokens.tokens[next][0] == ' ')
+        const token_str = if (token == 1 and tokens.tokens[next][0] == ' ')
             tokens.tokens[next][1..]
         else
             tokens.tokens[next];
@@ -849,4 +940,27 @@ test "softmax" {
         sum += x[i];
     }
     try std.testing.expect(sum == 1.0);
+}
+
+test "bpe" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var allocator = std.testing.allocator;
+    const tokens = try load_tokens("tokenizer.bin", 32000, allocator);
+    defer tokens.deinit(allocator);
+
+    try std.testing.expect(std.mem.eql(u8, tokens.tokens[100], "a"));
+    try std.testing.expect(tokens.max_token_len == 27);
+    try std.testing.expect(tokens.tokens.len == tokens.scores.len);
+    try std.testing.expect(tokens.tokens.len == 32000);
+    try std.testing.expect(tokens.lookup("a") == 100);
+
+    const input: []const u8 = "A man dying of thirst is suddenly a mineral water critic?";
+    const expected_tokenization: []const u32 = &[_]u32{ 68, 767, 27116, 310, 266, 765, 338, 11584, 263, 1375, 13537, 4094, 11164, 66 };
+    const tokenization = try tokens.encode(input, allocator);
+    defer allocator.free(tokenization);
+    try std.testing.expect(tokenization.len == expected_tokenization.len);
+    for (tokenization, 0..) |token, i| {
+        try std.testing.expect(token == expected_tokenization[i]);
+    }
 }
