@@ -65,8 +65,8 @@ const Weights = struct {
     w3: [*]f32, // (layer, hidden_dim, dim)
     rms_final_weight: [*]f32, // (dim,)
     // freq_cis for RoPE relatively positional embeddings
-    freq_cis_real: [*]f32, // (seq_len, dim/2)
-    freq_cis_imag: [*]f32, // (seq_len, dim/2)
+    freq_cis_real: [*]f32, // (seq_len, head_size/2)
+    freq_cis_imag: [*]f32, // (seq_len, head_size/2)
     // (optional) classifier weights for the logits, on the last layer
     wcls: [*]f32, // (vocab_size, dim)
 
@@ -229,25 +229,20 @@ fn transformer(token: usize, pos: usize, config: *const Config, s: *RunState, w:
             w.wv[l * dim * dim ..][0 .. dim * dim],
         });
 
-        // apply RoPE rotation to the q and k vectors for each head
-        for (0..config.n_heads) |h| {
-            // get the q and k vectors for this head
-            const q = s.q[h * head_size ..][0..head_size];
-            const k = s.k[h * head_size ..][0..head_size];
-            // apply the rotation
-            var i: usize = 0;
-            while (i < head_size) : (i += 2) {
-                const q0 = q[i];
-                const q1 = q[i + 1];
-                const k0 = k[i];
-                const k1 = k[i + 1];
-                const fcr = freq_cis_real_row[i / 2];
-                const fci = freq_cis_imag_row[i / 2];
-                q[i] = q0 * fcr - q1 * fci;
-                q[i + 1] = q0 * fci + q1 * fcr;
-                k[i] = k0 * fcr - k1 * fci;
-                k[i + 1] = k0 * fci + k1 * fcr;
-            }
+        // RoPe relative positional encoding: complex-valued rotation of q and
+        // k by freq_cis in each head
+        var i: usize = 0;
+        while (i < dim) : (i += 2) {
+            const q0 = s.q[i];
+            const q1 = s.q[i + 1];
+            const k0 = s.k[i];
+            const k1 = s.k[i + 1];
+            const fcr = freq_cis_real_row[(i % head_size) / 2];
+            const fci = freq_cis_imag_row[(i % head_size) / 2];
+            s.q[i] = q0 * fcr - q1 * fci;
+            s.q[i + 1] = q0 * fci + q1 * fcr;
+            s.k[i] = k0 * fcr - k1 * fci;
+            s.k[i + 1] = k0 * fci + k1 * fcr;
         }
 
         // save key,value at the current timestep to our kv cache
@@ -310,8 +305,8 @@ fn transformer(token: usize, pos: usize, config: *const Config, s: *RunState, w:
         });
 
         // F.silu; silu(x)=x*σ(x),where σ(x) is the logistic sigmoid
-        for (0..hidden_dim) |i| {
-            s.hb[i] = s.hb[i] * (1.0 / (1.0 + std.math.exp(-s.hb[i])));
+        for (s.hb) |*v| {
+            v.* = v.* * (1.0 / (1.0 + std.math.exp(-v.*)));
         }
 
         // elementwise multiply with w3(x)
@@ -366,6 +361,17 @@ fn rmsnorm(o: []f32, x: []f32, w: []f32) void {
 ///     W                x             xout
 ///
 fn matmul(xout: []f32, x: []const f32, w: []const f32) void {
+    // // This one function accounts for ~90% of the total runtime.
+    // const d = xout.len;
+    // const n = x.len;
+    // assert(w.len == n * d);
+    // assert(w.len > 0);
+    //
+    // // unrolling doesn't seem to help
+    // for (0..d) |i| {
+    //     const wrow = w[i * n ..][0..n]; // row i of W
+    //     xout[i] = vector_dot_product(wrow, x);
+    // }
     matmul_fused(1, [_][]f32{xout}, x, [_][]const f32{w});
 }
 
