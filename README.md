@@ -36,28 +36,38 @@ zig build run -Doptimize=ReleaseFast -- stories15M.bin 0.9
 The benchmarks provided below were executed on an AMD Ryzen 9 5900X 12-Core
 Processor.
 
-If possible all benchmarks were run with `stories15M.bin` and a temperature of
-`0.9`.
+If possible all benchmarks were run using the `stories15M.bin` checkpoint file.
 
 ## Single-threaded
 
-| Implementation                                          | Tokens/s |
-| ------------------------------------------------------- | -------- |
-| llama2.zig (this repo)                                  | 525      |
-| llama2.c `make runfast -march=native`                   | 511      |
-| [llama2.zig](https://github.com/clebert/llama2.zig) [1] | 473      |
-| llama2.c `make runfast`                                 | 375      |
-| llama2.c `make run -march=native`                       | 122      |
-| llama2.c `make run`                                     | 116      |
-| [llama2.rs](https://github.com/gaxler/llama2.rs)        | 115      |
+### Argmax sampling
 
-[1] Only argmax token selection is supported in this implementation. In
-benchmarking this has shown to be faster than the sampling method.
+- Temperature 0.0
+- 256 tokens
+
+| Implementation                                      | Tokens/s |
+| --------------------------------------------------- | -------- |
+| llama2.zig (this repo)                              | 557      |
+| llama2.c `make runfast -march=native`               | 511      |
+| [llama2.zig](https://github.com/clebert/llama2.zig) | 473      |
+| llama2.c `make run -march=native`                   | 122      |
+| [llama2.rs](https://github.com/gaxler/llama2.rs)    | 115      |
+
+### Top-P sampling
+
+- Temperature 1.0
+- Top-P 0.9
+- 256 tokens
+
+  | Implementation                        | Tokens/s |
+  | ------------------------------------- | -------- |
+  | llama2.zig (this repo)                | 293      |
+  | llama2.c `make runfast -march=native` | 241      |
 
 ## Multi-threaded
 
 This implementation currently does not support multithreading so is not
-included in the table below.
+included in the table below. This is with temperate 0.9 and no top-p.
 
 | Implementation                                   | Tokens/s |
 | ------------------------------------------------ | -------- |
@@ -75,7 +85,8 @@ around 115 tokens/s to 430 tokens/s. Notable speed increases also came from:
 - Using SIMD versions of other core functions
 
 ```sh
-zig build run -Doptimize=ReleaseFast -- stories15M.bin 0.9
+zig build run -Doptimize=ReleaseFast -- stories15M.bin -t 0
+zig build run -Doptimize=ReleaseFast -- stories15M.bin -t 1.0 -p 0.9
 ```
 
 ```sh
@@ -85,7 +96,8 @@ zig version -> 0.11.0-dev.4315+f5239677e
 #### llama2.c
 
 ```sh
- ./run stories15M.bin 0.9
+ ./run stories15M.bin -t 1.0 -p 0.9
+ ./run stories15M.bin -t 0.0
 ```
 
 ```sh

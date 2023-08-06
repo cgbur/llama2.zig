@@ -127,6 +127,7 @@ const RunState = struct {
     v: []f32, // value (dim,)
     att: []f32, // buffer for scores/attention values (n_heads, seq_len)
     logits: []f32, // output logits
+    logits_indexed: []IndexedF32, // logits with index for top_p sampling
     // kv cache
     key_cache: []f32, // (layer, seq_len, dim)
     value_cache: []f32, // (layer, seq_len, dim)
@@ -145,6 +146,7 @@ const RunState = struct {
             .logits = try allocator.alignedAlloc(f32, simd_align, config.vocab_size),
             .key_cache = try allocator.alignedAlloc(f32, simd_align, config.n_layers * config.seq_len * config.dim),
             .value_cache = try allocator.alignedAlloc(f32, simd_align, config.n_layers * config.seq_len * config.dim),
+            .logits_indexed = try allocator.alignedAlloc(IndexedF32, simd_align, config.vocab_size),
         };
     }
 
@@ -159,6 +161,7 @@ const RunState = struct {
         allocator.free(self.v);
         allocator.free(self.att);
         allocator.free(self.logits);
+        allocator.free(self.logits_indexed);
         allocator.free(self.key_cache);
         allocator.free(self.value_cache);
         self.* = undefined;
@@ -563,29 +566,142 @@ fn sample(x: []f32) usize {
     return x.len - 1;
 }
 
+const IndexedF32 = struct {
+    index: u32,
+    value: f32,
+};
+
+fn IndexedF32Desc(_: void, a: IndexedF32, b: IndexedF32) bool {
+    return a.value > b.value;
+}
+
+/// Top-p (nucleus) sampling. Samples from the smallest set of tokens whose
+/// cumulative probability mass exceeds the probability p.
+fn sample_top_p(logits: []f32, p: f32, logits_index: []IndexedF32) usize {
+    assert(logits.len > 0);
+    assert(p > 0.0 and p <= 1.0);
+    assert(logits.len == logits_index.len);
+
+    // sort logits by value
+    for (logits, logits_index, 0..) |logit, *logidex, i| {
+        assert(i < std.math.maxInt(u32));
+        logidex.value = logit;
+        logidex.index = @intCast(i);
+    }
+    std.sort.pdq(IndexedF32, logits_index, {}, IndexedF32Desc);
+
+    // find the cutoff index
+    var cumulative_prob: f32 = 0.0;
+    var cutoff_index: usize = 0;
+    for (logits_index, 0..) |*logidex, i| {
+        cumulative_prob += logidex.value;
+        if (cumulative_prob > p) {
+            cutoff_index = i;
+            break;
+        }
+    }
+
+    // sample from the cutoff index
+    var rng = std.rand.DefaultPrng.init(0);
+    const r = rng.random().float(f32) * cumulative_prob;
+    var cdf: f32 = 0.0;
+    for (logits_index[0..cutoff_index]) |*logidex| {
+        cdf += logidex.value;
+        if (r < cdf) {
+            return logidex.index;
+        }
+    }
+    return logits_index[cutoff_index].index;
+}
+
+const usage_text: []const u8 =
+    \\Usage:   llama2 <checkpoint> [options]
+    \\Example: llama2 checkpoint.bin -n 256 -i "Once upon a time"
+    \\Options:
+    \\ -t, --temperature <float>  temperature, default 1.0
+    \\ -p, --top-p <float>  p value in top-p (nucleus) sampling. default 0.9, 0 = off
+    \\ -n, --seq-len <int>    number of steps to run for, default 256. 0 = max_seq_len
+    \\
+;
+
 pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
+    const stdout = std.io.getStdOut().writer();
 
     const args = try std.process.argsAlloc(allocator);
     if (args.len < 2) {
-        std.debug.print("usage: llama2 <checkpoint.bin> [temperature=0.9] [seq_len]\n", .{});
+        try stdout.writeAll(usage_text);
         return;
     }
 
-    // grab the checkpoint path
-    const bin_path = args[1];
+    var bin_path: ?[]const u8 = null;
+    var temperature: f32 = 1.0;
+    var top_p: f32 = 0.9;
+    var seq_len: usize = 0;
 
-    const DEFAULT_TEMPERATURE = 0.9;
-    var temperature: f32 = if (args.len > 2)
-        std.fmt.parseFloat(f32, args[2]) catch DEFAULT_TEMPERATURE
-    else
-        DEFAULT_TEMPERATURE;
-    temperature = std.math.clamp(temperature, 0.0, 1.0);
+    // parse args
+    var arg_i: usize = 1;
+    while (arg_i < args.len) : (arg_i += 1) {
+        const arg = args[arg_i];
+        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+            try stdout.writeAll(usage_text);
+            return std.process.cleanExit();
+        }
+        if (!std.mem.startsWith(u8, arg, "-")) {
+            if (bin_path) |_| {
+                std.debug.print("error: multiple checkpoint paths specified\n", .{});
+                std.process.exit(1);
+            } else {
+                bin_path = arg;
+            }
+        } else if (std.mem.eql(u8, arg, "-t") or std.mem.eql(u8, arg, "--temperature")) {
+            arg_i += 1;
+            if (arg_i >= args.len) {
+                std.debug.print("error: missing argument for temperature\n", .{});
+                std.process.exit(1);
+            }
+            temperature = std.fmt.parseFloat(f32, args[arg_i]) catch |err| {
+                std.debug.print("unable to parse --temperature argument '{s}': {s}\n", .{
+                    args[arg_i], @errorName(err),
+                });
+                std.process.exit(1);
+            };
+            // temperature = std.math.clamp(temperature, 0.0, 1.0); // TODO: clamp?
+        } else if (std.mem.eql(u8, arg, "-n") or std.mem.eql(u8, arg, "--seq-len")) {
+            arg_i += 1;
+            if (arg_i >= args.len) {
+                std.debug.print("error: missing argument for seq-len\n", .{});
+                std.process.exit(1);
+            }
+            seq_len = std.fmt.parseInt(usize, args[arg_i], 10) catch |err| {
+                std.debug.print("unable to parse --seq-len argument '{s}': {s}\n", .{
+                    args[arg_i], @errorName(err),
+                });
+                std.process.exit(1);
+            };
+        } else if (std.mem.eql(u8, arg, "-p") or std.mem.eql(u8, arg, "--top-p")) {
+            arg_i += 1;
+            if (arg_i >= args.len) {
+                std.debug.print("error: missing argument for top-p\n", .{});
+                std.process.exit(1);
+            }
+            top_p = std.fmt.parseFloat(f32, args[arg_i]) catch |err| {
+                std.debug.print("unable to parse --top-p argument '{s}': {s}\n", .{
+                    args[arg_i], @errorName(err),
+                });
+                std.process.exit(1);
+            };
+            top_p = std.math.clamp(top_p, 0.0, 1.0);
+        } else {
+            try stdout.writeAll(usage_text);
+            return std.process.cleanExit();
+        }
+    }
 
     // read the config from the checkpoint
-    var checkpoint = try std.fs.cwd().openFile(bin_path, .{}); // close this by hand
+    var checkpoint = try std.fs.cwd().openFile(bin_path.?, .{}); // close this by hand
     var config_read: ConfigReader = try checkpoint.reader().readStruct(ConfigReader);
     // negative vocab size is hacky way of signaling unshared weights. bit yikes.
     const shared_weights: bool = config_read.vocab_size > 0;
@@ -594,14 +710,6 @@ pub fn main() !void {
     checkpoint.close();
     const config = config_read.config(); // convert to usize version
 
-    const seq_len = seq_len_blk: {
-        const seq_len: usize = if (args.len > 3)
-            std.fmt.parseInt(usize, args[3], 10) catch config.seq_len
-        else
-            config.seq_len;
-        break :seq_len_blk std.math.clamp(seq_len, 1, config.seq_len);
-    };
-
     std.debug.print("config: {any}\n", .{config});
     std.debug.print("shared weights: {any}\n", .{shared_weights});
     std.debug.print("temperature: {d}\n", .{temperature});
@@ -609,7 +717,7 @@ pub fn main() !void {
     std.debug.print("\n", .{});
 
     // mmap the checkpoint to directly map the weights
-    const mapped_checkpoint = try (std.fs.cwd().openFile(bin_path, .{}));
+    const mapped_checkpoint = try (std.fs.cwd().openFile(bin_path.?, .{}));
     defer mapped_checkpoint.close();
     const data: []align(mem.page_size) u8 = try std.os.mmap(null, file_size, std.os.PROT.READ, std.os.MAP.PRIVATE, mapped_checkpoint.handle, 0);
     defer std.os.munmap(data);
@@ -629,24 +737,25 @@ pub fn main() !void {
     var state = try RunState.init(allocator, &config);
     defer state.deinit(allocator);
 
-    var stdout = std.io.getStdOut().writer();
-
     var next: usize = undefined; // the next token as predicted by the model
     var token: usize = 1; // 1 = <BOS> for llama2
     var timer: ?std.time.Timer = null;
 
-    // for now just do seq len steps
+    // adjust the sequence length if needed
+    seq_len = if (seq_len == 0) config.seq_len else seq_len;
+    seq_len = std.math.clamp(seq_len, 1, config.seq_len); // clamp to seq_len
     for (0..seq_len) |pos| {
         transformer(token, pos, &config, &state, &weights);
 
         if (temperature == 0.0) {
             next = argmax(state.logits);
         } else {
-            // apply the temperature to the logits
             for (state.logits) |*val| val.* /= temperature;
-            // apply softmax to the logits to get the probabilities for next token
             softmax(state.logits);
-            next = sample(state.logits);
+            next = if (top_p == 0.0)
+                sample(state.logits)
+            else
+                sample_top_p(state.logits, top_p, state.logits_indexed);
         }
 
         // print the token, don't bother with the white space hack for now
