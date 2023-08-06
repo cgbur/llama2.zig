@@ -178,6 +178,14 @@ const Tokens = struct {
     scores: []f32,
     max_token_len: u32,
 
+    fn from_file(path: []const u8, vocab_size: usize, allocator: Allocator) !Tokens {
+        var token_file = try std.fs.cwd().openFile(path, .{});
+        defer token_file.close();
+        var buf_reader = std.io.bufferedReader(token_file.reader());
+        const tokens = try Tokens.init(buf_reader.reader(), allocator, vocab_size);
+        return tokens;
+    }
+
     // TODO: try using max token length to alloc single buffer for all tokens
     fn init(reader: anytype, allocator: Allocator, vocab_size: usize) !Tokens {
         var tokens: Tokens = undefined;
@@ -217,6 +225,8 @@ const Tokens = struct {
         return null;
     }
 
+    /// Given a string, returns the encoding as a list of tokens. You are
+    /// responsible for freeing the returned list.
     fn encode(self: *const Tokens, input: []const u8, allocator: Allocator) ![]u32 {
         var token_buf: []u32 = try allocator.alloc(u32, input.len); // worst case is every byte is a token
         var token_buf_len: usize = token_buf.len;
@@ -707,14 +717,6 @@ const usage_text: []const u8 =
     \\
 ;
 
-fn load_tokens(path: []const u8, vocab_size: usize, allocator: Allocator) !Tokens {
-    var token_file = try std.fs.cwd().openFile(path, .{});
-    defer token_file.close();
-    var buf_reader = std.io.bufferedReader(token_file.reader());
-    const tokens = try Tokens.init(buf_reader.reader(), allocator, vocab_size);
-    return tokens;
-}
-
 pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -823,7 +825,7 @@ pub fn main() !void {
     const weights = Weights.init(&config, data[@sizeOf(ConfigReader)..], shared_weights);
 
     // load the tokens for the model
-    const tokens = try load_tokens("tokenizer.bin", config.vocab_size, allocator);
+    const tokens = try Tokens.from_file("tokenizer.bin", config.vocab_size, allocator);
     defer tokens.deinit(allocator);
 
     // initialize the run state for inference
@@ -946,7 +948,7 @@ test "bpe" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var allocator = std.testing.allocator;
-    const tokens = try load_tokens("tokenizer.bin", 32000, allocator);
+    const tokens = try Tokens.from_file("tokenizer.bin", 32000, allocator);
     defer tokens.deinit(allocator);
 
     try std.testing.expect(std.mem.eql(u8, tokens.tokens[100], "a"));

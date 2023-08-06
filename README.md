@@ -9,26 +9,53 @@ Andrej Karpathy. It runs inference for the
 [llama2](https://github.com/facebookresearch/llama) model architecture recently
 published by Meta.
 
-As a work in progress side project, it may not always be feature complete or
-up-to-date with the latest version of llama2.c. However, contributions and pull
-requests are greatly appreciated. The ultimate goal is to create a fast,
-portable, and user-friendly implementation of the llama2 model architecture.
-The code prioritizes simplicity and readability without sacrificing
-performance. Certain core functions have SIMD implementations using the Zig
-`@Vector` feature, which provides a ~5x speed increase. For more details,
-please refer to the [performance](#performance) section.
+It currently supports:
+
+- Inference of llama2 model checkpoints
+- Temperature control
+- Top-p (nucleus) sampling
+- Prompt handling (bpe tokenization)
+- Sequence length control
+- Running really fast
+
+The ultimate goal is to create a fast, portable, and user-friendly
+implementation of the llama2 model architecture. The code prioritizes simplicity
+and readability without sacrificing performance. Certain core functions have
+SIMD implementations using the Zig `@Vector` feature, which provides a ~5x speed
+increase. For more details and comparisons to other implementation, please refer
+to the [performance](#performance) section.
 
 The `stories15.bin` file is a model checkpoint for a 15M parameter model that
 was trained on the tiny stories dataset. The method for generating this file
-can be found in the llama2.c repo. The tokenizer.bin file from that repo is
-currently out of date but will be ported here in due course.
+can be found in the llama2.c repo.
 
 ## Usage
 
 After cloning the repo, run the following command for inference:
 
 ```sh
-zig build run -Doptimize=ReleaseFast -- stories15M.bin 0.9
+zig build -Doptimize=ReleaseFast
+zig-out/bin/llama2 stories15M.bin
+```
+
+A prompt can be provided as an argument to the program:
+
+```sh
+llama2 stories15M.bin -i "Once upon a time"
+```
+
+For all of the options, run:
+
+```sh
+$ llama2 --help
+Usage:   llama2 <checkpoint> [options]
+Example: llama2 checkpoint.bin -n 256 -i "Once upon a time"
+Options:
+ -h, --help               print this help message
+ -t, --temperature <float> temperature, default 1.0
+ -p, --top-p <float>      p value in top-p (nucleus) sampling. default 0.9, 0 = off
+ -n, --seq-len <int>      number of steps to run for, default 256. 0 = max_seq_len
+ -i, --input <string>     input text for the prompt, default ""
 ```
 
 ## Performance
@@ -36,7 +63,7 @@ zig build run -Doptimize=ReleaseFast -- stories15M.bin 0.9
 The benchmarks provided below were executed on an AMD Ryzen 9 5900X 12-Core
 Processor.
 
-If possible all benchmarks were run using the `stories15M.bin` checkpoint file.
+All benchmarks were run using the `stories15M.bin` checkpoint file.
 
 ## Single-threaded
 
@@ -47,7 +74,7 @@ If possible all benchmarks were run using the `stories15M.bin` checkpoint file.
 
 | Implementation                                      | Tokens/s |
 | --------------------------------------------------- | -------- |
-| llama2.zig (this repo)                              | 557      |
+| llama2.zig (this repo)                              | 662      |
 | llama2.c `make runfast -march=native`               | 511      |
 | [llama2.zig](https://github.com/clebert/llama2.zig) | 473      |
 | llama2.c `make run -march=native`                   | 122      |
@@ -61,7 +88,7 @@ If possible all benchmarks were run using the `stories15M.bin` checkpoint file.
 
   | Implementation                        | Tokens/s |
   | ------------------------------------- | -------- |
-  | llama2.zig (this repo)                | 293      |
+  | llama2.zig (this repo)                | 341      |
   | llama2.c `make runfast -march=native` | 241      |
 
 ## Multi-threaded
@@ -85,8 +112,9 @@ around 115 tokens/s to 430 tokens/s. Notable speed increases also came from:
 - Using SIMD versions of other core functions
 
 ```sh
-zig build run -Doptimize=ReleaseFast -- stories15M.bin -t 0
-zig build run -Doptimize=ReleaseFast -- stories15M.bin -t 1.0 -p 0.9
+llama2 stories15M.bin -t 0
+llama2 stories15M.bin -t 1.0 -p 0.9
+llama2 stories15M.bin -t 1.0 -p 0.9 -i "Once upon a time"
 ```
 
 ```sh
