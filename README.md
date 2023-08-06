@@ -61,9 +61,12 @@ Options:
 ## Performance
 
 The benchmarks provided below were executed on an AMD Ryzen 9 5900X 12-Core
-Processor.
+Processor. All speeds measurements are taken using the `stories15M.bin`
+checkpoint file.
 
-All benchmarks were run using the `stories15M.bin` checkpoint file.
+If you have an implementation you want to add to the table, please open an issue
+and I'll be happy to add it. Please only submit implementations that are single
+language implementations (no OpenBlas, etc.).
 
 ## Single-threaded
 
@@ -86,10 +89,10 @@ All benchmarks were run using the `stories15M.bin` checkpoint file.
 - Top-P 0.9
 - 256 tokens
 
-  | Implementation                        | Tokens/s |
-  | ------------------------------------- | -------- |
-  | llama2.zig (this repo)                | 341      |
-  | llama2.c `make runfast -march=native` | 241      |
+| Implementation                        | Tokens/s |
+| ------------------------------------- | -------- |
+| llama2.zig (this repo)                | 341      |
+| llama2.c `make runfast -march=native` | 241      |
 
 ## Multi-threaded
 
