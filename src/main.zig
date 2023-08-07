@@ -845,7 +845,9 @@ pub fn main() !void {
     // adjust the sequence length if needed
     seq_len = if (seq_len == 0) config.seq_len else seq_len;
     seq_len = std.math.clamp(seq_len, 1, config.seq_len); // clamp to seq_len
-    for (0..seq_len) |pos| {
+    var pos: usize = 0; // the current position in the sequence
+    // for (0..seq_len) |pos| {
+    while (pos < seq_len) : (pos += 1) {
         transformer(token, pos, &config, &state, &weights);
 
         // if we have a prompt, we need to feed it in
@@ -883,7 +885,7 @@ pub fn main() !void {
         }
     }
     const time = timer.?.read();
-    const tokens_per_ms = @as(f64, @floatFromInt(seq_len - 1)) / @as(f64, @floatFromInt(time / std.time.ns_per_ms));
+    const tokens_per_ms = @as(f64, @floatFromInt(pos - 1)) / @as(f64, @floatFromInt(time / std.time.ns_per_ms));
     const tokens_per_sec = tokens_per_ms * 1000.0;
 
     // print tokens per second
