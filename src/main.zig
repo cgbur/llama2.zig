@@ -168,27 +168,25 @@ const RunState = struct {
     }
 };
 
-/// A (vocab_size, token_len) array of tokens where each token is a string of
-/// bytes (i.e. a string of u8s) that is variable length. The token_len for
-/// each token is variable but the total length of the array is fixed.
-const Tokens = struct {
+/// Tokens, their scores, and the max token length. Supports initialization
+/// from a file and encoding text into tokens via the `encode` method.
+const Tokenizer = struct {
     const Self = @This();
 
     tokens: [][]u8,
     scores: []f32,
     max_token_len: u32,
 
-    fn from_file(path: []const u8, vocab_size: usize, allocator: Allocator) !Tokens {
+    fn fromFile(path: []const u8, vocab_size: usize, allocator: Allocator) !Tokenizer {
         var token_file = try std.fs.cwd().openFile(path, .{});
         defer token_file.close();
         var buf_reader = std.io.bufferedReader(token_file.reader());
-        const tokens = try Tokens.init(buf_reader.reader(), allocator, vocab_size);
+        const tokens = try Tokenizer.init(buf_reader.reader(), allocator, vocab_size);
         return tokens;
     }
 
-    // TODO: try using max token length to alloc single buffer for all tokens
-    fn init(reader: anytype, allocator: Allocator, vocab_size: usize) !Tokens {
-        var tokens: Tokens = undefined;
+    fn init(reader: anytype, allocator: Allocator, vocab_size: usize) !Tokenizer {
+        var tokens: Tokenizer = undefined;
         tokens.tokens = try allocator.alloc([]u8, vocab_size);
         tokens.scores = try allocator.alloc(f32, vocab_size);
         tokens.max_token_len = try reader.readInt(@TypeOf(tokens.max_token_len), std.builtin.Endian.Little);
@@ -227,7 +225,7 @@ const Tokens = struct {
 
     /// Given a string, returns the encoding as a list of tokens. You are
     /// responsible for freeing the returned list.
-    fn encode(self: *const Tokens, input: []const u8, allocator: Allocator) ![]u32 {
+    fn encode(self: *const Tokenizer, input: []const u8, allocator: Allocator) ![]u32 {
         var token_buf: []u32 = try allocator.alloc(u32, input.len); // worst case is every byte is a token
         var token_buf_len: usize = token_buf.len;
 
@@ -821,8 +819,8 @@ pub fn main() !void {
     const weights = Weights.init(&config, data[@sizeOf(ConfigReader)..], shared_weights);
 
     // load the tokens for the model
-    const tokens = try Tokens.from_file("tokenizer.bin", config.vocab_size, allocator);
-    defer tokens.deinit(allocator);
+    const tokenizer = try Tokenizer.fromFile("tokenizer.bin", config.vocab_size, allocator);
+    defer tokenizer.deinit(allocator);
 
     // initialize the run state for inference
     var state = try RunState.init(allocator, &config);
@@ -833,7 +831,7 @@ pub fn main() !void {
     var prompt_len: usize = 0; // avoid the double if later
     defer if (prompt) |p| allocator.free(p);
     if (input) |in| {
-        const encoded_input = try tokens.encode(in, allocator);
+        const encoded_input = try tokenizer.encode(in, allocator);
         prompt_len = encoded_input.len;
         prompt = encoded_input;
     }
@@ -872,10 +870,10 @@ pub fn main() !void {
         }
 
         // print the token, at the start of the sequence we don't want to print the space
-        const token_str = if (token == 1 and tokens.tokens[next][0] == ' ')
-            tokens.tokens[next][1..]
+        const token_str = if (token == 1 and tokenizer.tokens[next][0] == ' ')
+            tokenizer.tokens[next][1..]
         else
-            tokens.tokens[next];
+            tokenizer.tokens[next];
         try stdout.print("{s}", .{token_str});
         token = next;
 
@@ -946,18 +944,18 @@ test "bpe" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var allocator = std.testing.allocator;
-    const tokens = try Tokens.from_file("tokenizer.bin", 32000, allocator);
-    defer tokens.deinit(allocator);
+    const tokenizer = try Tokenizer.fromFile("tokenizer.bin", 32000, allocator);
+    defer tokenizer.deinit(allocator);
 
-    try std.testing.expect(std.mem.eql(u8, tokens.tokens[100], "a"));
-    try std.testing.expect(tokens.max_token_len == 27);
-    try std.testing.expect(tokens.tokens.len == tokens.scores.len);
-    try std.testing.expect(tokens.tokens.len == 32000);
-    try std.testing.expect(tokens.lookup("a") == 100);
+    try std.testing.expect(std.mem.eql(u8, tokenizer.tokens[100], "a"));
+    try std.testing.expect(tokenizer.max_token_len == 27);
+    try std.testing.expect(tokenizer.tokens.len == tokenizer.scores.len);
+    try std.testing.expect(tokenizer.tokens.len == 32000);
+    try std.testing.expect(tokenizer.lookup("a") == 100);
 
     const input: []const u8 = "A man dying of thirst is suddenly a mineral water critic?";
     const expected_tokenization: []const u32 = &[_]u32{ 68, 767, 27116, 310, 266, 765, 338, 11584, 263, 1375, 13537, 4094, 11164, 66 };
-    const tokenization = try tokens.encode(input, allocator);
+    const tokenization = try tokenizer.encode(input, allocator);
     defer allocator.free(tokenization);
     try std.testing.expect(tokenization.len == expected_tokenization.len);
     for (tokenization, 0..) |token, i| {
