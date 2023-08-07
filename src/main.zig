@@ -654,11 +654,11 @@ fn sample(x: []f32) usize {
 const IndexedF32 = struct {
     index: u32,
     value: f32,
-};
 
-fn IndexedF32Desc(_: void, a: IndexedF32, b: IndexedF32) bool {
-    return a.value > b.value;
-}
+    fn desc(_: void, a: IndexedF32, b: IndexedF32) bool {
+        return a.value > b.value;
+    }
+};
 
 /// Top-p (nucleus) sampling. Samples from the smallest set of tokens whose
 /// cumulative probability mass exceeds the probability p.
@@ -673,7 +673,7 @@ fn sample_top_p(logits: []f32, p: f32, logits_index: []IndexedF32) usize {
         logidex.value = logit;
         logidex.index = @intCast(i);
     }
-    std.sort.pdq(IndexedF32, logits_index, {}, IndexedF32Desc);
+    std.sort.pdq(IndexedF32, logits_index, {}, IndexedF32.desc);
 
     // find the cutoff index
     var cumulative_prob: f32 = 0.0;
@@ -844,7 +844,6 @@ pub fn main() !void {
     seq_len = if (seq_len == 0) config.seq_len else seq_len;
     seq_len = std.math.clamp(seq_len, 1, config.seq_len); // clamp to seq_len
     var pos: usize = 0; // the current position in the sequence
-    // for (0..seq_len) |pos| {
     while (pos < seq_len) : (pos += 1) {
         transformer(token, pos, &config, &state, &weights);
 
