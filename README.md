@@ -77,9 +77,9 @@ language implementations (no OpenBlas, etc.).
 
 | Implementation                                      | Tokens/s |
 | --------------------------------------------------- | -------- |
-| llama2.zig (this repo)                              | 577      |
-| llama2.c `make runfast -march=native`               | 511      |
-| [llama2.zig](https://github.com/clebert/llama2.zig) | 473      |
+| llama2.zig (this repo)                              | 606      |
+| llama2.c `make runfast -march=native`               | 548      |
+| [llama2.zig](https://github.com/clebert/llama2.zig) | 496      |
 | llama2.c `make run -march=native`                   | 122      |
 | [llama2.rs](https://github.com/gaxler/llama2.rs)    | 115      |
 
