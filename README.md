@@ -169,6 +169,7 @@ strip = "symbols"
 - \[ \] Incorporate the Python script used to generate checkpoints
 - \[ \] Parallelize multi-head attention process
 - \[ \] Add support for multi-threading (this is not going well)
+- \[ \] Top-p sampling is really slow, maybe some way to speed it up
 
 ## Contributing
 
