@@ -166,9 +166,9 @@ strip = "symbols"
 
 ## Todo
 
-- \[ \] Add tokenization support for prompt handling
 - \[ \] Incorporate the Python script used to generate checkpoints
 - \[ \] Parallelize multi-head attention process
+- \[ \] Add support for multi-threading (this is not going well)
 
 ## Contributing
 
