@@ -703,11 +703,11 @@ const usage_text: []const u8 =
     \\Usage:   llama2 <checkpoint> [options]
     \\Example: llama2 checkpoint.bin -n 256 -i "Once upon a time"
     \\Options:
-    \\ -h, --help               print this help message
-    \\ -t, --temperature <float> temperature, default 1.0
-    \\ -p, --top-p <float>      p value in top-p (nucleus) sampling. default 0.9, 0 = off
-    \\ -n, --seq-len <int>      number of steps to run for, default 256. 0 = max_seq_len
-    \\ -i, --input <string>     input text for the prompt, default ""
+    \\ -h, --help                print this help message
+    \\ -t, --temperature <float> temperature, default 1.0 (0.0, 1]
+    \\ -p, --top-p <float>       p value in top-p (nucleus) sampling. default 1.0, 0 || 1 = off
+    \\ -n, --seq-len <int>       number of steps to run for, default 256. 0 = max_seq_len
+    \\ -i, --input <string>      input text for the prompt, default ""
     \\
 ;
 
@@ -726,7 +726,7 @@ pub fn main() !void {
     var bin_path: ?[]const u8 = null;
     var input: ?[]const u8 = null;
     var temperature: f32 = 1.0;
-    var top_p: f32 = 0.9;
+    var top_p: f32 = 1.0;
     var seq_len: usize = 0;
 
     // parse args
@@ -854,9 +854,11 @@ pub fn main() !void {
             if (temperature == 0.0) {
                 next = argmax(state.logits);
             } else {
-                for (state.logits) |*val| val.* /= temperature;
+                if (temperature != 1.0) {
+                    for (state.logits) |*val| val.* /= temperature;
+                }
                 softmax(state.logits);
-                next = if (top_p == 0.0)
+                next = if (top_p == 0.0 or top_p == 1.0)
                     sample(state.logits)
                 else
                     sample_top_p(state.logits, top_p, state.logits_indexed);
