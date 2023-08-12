@@ -117,20 +117,20 @@ const Weights = struct {
 const RunState = struct {
     const Self = @This();
 
-    x: []f32, // activation at current time stamp (dim,)
-    xb: []f32, // same, but inside a residual branch (dim,)
-    xb2: []f32, // an additional buffer just for convenience (dim,)
-    hb: []f32, // buffer for hidden dimension in the ffn (hidden_dim,)
-    hb2: []f32, // buffer for hidden dimension in the ffn (hidden_dim,)
-    q: []f32, // query (dim,)
-    k: []f32, // key (dim,)
-    v: []f32, // value (dim,)
-    att: []f32, // buffer for scores/attention values (n_heads, seq_len)
-    logits: []f32, // output logits
-    logits_indexed: []IndexedF32, // logits with index for top_p sampling
+    x: []align(simd_align) f32, // activation at current time stamp (dim,)
+    xb: []align(simd_align) f32, // same, but inside a residual branch (dim,)
+    xb2: []align(simd_align) f32, // an additional buffer just for convenience (dim,)
+    hb: []align(simd_align) f32, // buffer for hidden dimension in the ffn (hidden_dim,)
+    hb2: []align(simd_align) f32, // buffer for hidden dimension in the ffn (hidden_dim,)
+    q: []align(simd_align) f32, // query (dim,)
+    k: []align(simd_align) f32, // key (dim,)
+    v: []align(simd_align) f32, // value (dim,)
+    att: []align(simd_align) f32, // buffer for scores/attention values (n_heads, seq_len)
+    logits: []align(simd_align) f32, // output logits
+    logits_indexed: []align(simd_align) IndexedF32, // logits with index for top_p sampling
     // kv cache
-    key_cache: []f32, // (layer, seq_len, dim)
-    value_cache: []f32, // (layer, seq_len, dim)
+    key_cache: []align(simd_align) f32, // (layer, seq_len, dim)
+    value_cache: []align(simd_align) f32, // (layer, seq_len, dim)
 
     fn init(allocator: Allocator, config: *const Config) !Self {
         return Self{
@@ -151,19 +151,9 @@ const RunState = struct {
     }
 
     fn deinit(self: *Self, allocator: Allocator) void {
-        allocator.free(self.x);
-        allocator.free(self.xb);
-        allocator.free(self.xb2);
-        allocator.free(self.hb);
-        allocator.free(self.hb2);
-        allocator.free(self.q);
-        allocator.free(self.k);
-        allocator.free(self.v);
-        allocator.free(self.att);
-        allocator.free(self.logits);
-        allocator.free(self.logits_indexed);
-        allocator.free(self.key_cache);
-        allocator.free(self.value_cache);
+        inline for (std.meta.fields(Self)) |f| {
+            allocator.free(@field(self, f.name));
+        }
         self.* = undefined;
     }
 };
@@ -979,8 +969,6 @@ test "softmax" {
 }
 
 test "bpe" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
     var allocator = std.testing.allocator;
     const tokenizer = try Tokenizer.fromFile("tokenizer.bin", 32000, allocator);
     defer tokenizer.deinit(allocator);
