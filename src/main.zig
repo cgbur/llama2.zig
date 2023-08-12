@@ -235,7 +235,7 @@ const Tokenizer = struct {
         }
 
         // need an allocator for doing string concatenation, used fixed buffer
-        // allocator so we dont need to allocate any memory
+        // allocator so we don't need to allocate any memory outside the stack
         var buffer: [max_allowed_token_len]u8 = undefined;
         var fba = std.heap.FixedBufferAllocator.init(&buffer);
         const fixed_allocator = fba.allocator();
@@ -268,12 +268,12 @@ const Tokenizer = struct {
             }
 
             if (best_idx) |best| {
-                // merge the best token and shfit the rest of the tokens down
+                // merge the best token and shift the rest of the tokens down
                 token_buf[best] = best_id;
                 std.mem.copyForwards(u32, token_buf[best + 1 ..], token_buf[best + 2 ..]);
                 token_buf_len -= 1;
             } else {
-                // if we didnt find any tokens to merge, we are done
+                // if we didn't find any tokens to merge, we are done
                 break;
             }
         }
@@ -378,7 +378,7 @@ fn transformer(token: usize, pos: usize, config: *const Config, s: *RunState, w:
         // residual connection back into x
         accum(x, s.xb2);
 
-        // ffn rsnorm
+        // ffn rmsnorm
         rmsnorm(s.xb, x, w.rms_ffn_weight[l * dim ..][0..dim]);
 
         // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
