@@ -270,7 +270,7 @@ const Tokenizer = struct {
             if (best_idx) |best| {
                 // merge the best token and shift the rest of the tokens down
                 token_buf[best] = best_id;
-                std.mem.copyForwards(u32, token_buf[best + 1 ..], token_buf[best + 2 ..]);
+                std.mem.copyForwards(u32, token_buf[best + 1 ..], token_buf[best + 2 .. token_buf_len]);
                 token_buf_len -= 1;
             } else {
                 // if we didn't find any tokens to merge, we are done
