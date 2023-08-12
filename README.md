@@ -51,11 +51,12 @@ $ llama2 --help
 Usage:   llama2 <checkpoint> [options]
 Example: llama2 checkpoint.bin -n 256 -i "Once upon a time"
 Options:
- -h, --help               print this help message
- -t, --temperature <float> temperature, default 1.0
- -p, --top-p <float>      p value in top-p (nucleus) sampling. default 0.9, 0 = off
- -n, --seq-len <int>      number of steps to run for, default 256. 0 = max_seq_len
- -i, --input <string>     input text for the prompt, default ""
+ -h, --help                print this help message
+ -t, --temperature <float> temperature, default 1.0 (0.0, 1]
+ -p, --top-p <float>       p value in top-p (nucleus) sampling. default 1.0, 0 || 1 = off
+ -n, --seq-len <int>       number of steps to run for, default 256. 0 = max_seq_len
+ -i, --input <string>      input text for the prompt, default ""
+ -v, --verbose             print model info and tokens/s 
 ```
 
 ## Performance
