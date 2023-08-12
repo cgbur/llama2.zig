@@ -638,7 +638,7 @@ fn argmax(x: []f32) usize {
 
 fn sample(x: []f32) usize {
     assert(x.len > 0);
-    var rng = std.rand.DefaultPrng.init(0);
+    var rng = std.rand.DefaultPrng.init(seed);
     var r = rng.random().float(f32);
 
     var cdf: f32 = 0.0;
@@ -696,7 +696,7 @@ fn sample_top_p(logits: []f32, p: f32, logits_index: []IndexedF32) usize {
     }
 
     // sample from the cutoff index
-    var rng = std.rand.DefaultPrng.init(0);
+    var rng = std.rand.DefaultPrng.init(seed);
     const r = rng.random().float(f32) * cumulative_prob;
     var cdf: f32 = 0.0;
     for (0..cutoff_index + 1) |i| {
@@ -717,10 +717,12 @@ const usage_text: []const u8 =
     \\ -p, --top-p <float>       p value in top-p (nucleus) sampling. default 1.0, 0 || 1 = off
     \\ -n, --seq-len <int>       number of steps to run for, default 256. 0 = max_seq_len
     \\ -i, --input <string>      input text for the prompt, default ""
+    \\ -s, --seed <int>          random seed, default to time
     \\ -v, --verbose             print model info and tokens/s 
     \\
 ;
 
+var seed: u64 = 0;
 var verbose: bool = false;
 fn log(comptime format: []const u8, args: anytype) void {
     if (verbose) {
@@ -745,6 +747,7 @@ pub fn main() !void {
     var temperature: f32 = 1.0;
     var top_p: f32 = 1.0;
     var seq_len: usize = 0;
+    seed = @bitCast(std.time.milliTimestamp());
 
     // parse args
     var arg_i: usize = 1;
@@ -806,6 +809,18 @@ pub fn main() !void {
                 std.process.exit(1);
             }
             input = args[arg_i];
+        } else if (std.mem.eql(u8, arg, "-s") or std.mem.eql(u8, arg, "--seed")) {
+            arg_i += 1;
+            if (arg_i >= args.len) {
+                std.debug.print("error: missing argument for seed\n", .{});
+                std.process.exit(1);
+            }
+            seed = std.fmt.parseInt(u64, args[arg_i], 10) catch |err| {
+                std.debug.print("unable to parse --seed argument '{s}': {s}\n", .{
+                    args[arg_i], @errorName(err),
+                });
+                std.process.exit(1);
+            };
         } else if (std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "--verbose")) {
             verbose = true;
         } else {
@@ -830,6 +845,7 @@ pub fn main() !void {
     log("temperature: {d}\n", .{temperature});
     log("top-p: {d}\n", .{top_p});
     log("SIMD vector size: {d}\n", .{DEFAULT_VECTOR_WIDTH});
+    log("seed: {d}\n", .{seed});
     log("\n", .{});
 
     // mmap the checkpoint to directly map the weights
