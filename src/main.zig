@@ -667,19 +667,28 @@ fn sample_top_p(logits: []f32, p: f32, logits_index: []IndexedF32) usize {
     assert(p > 0.0 and p <= 1.0);
     assert(logits.len == logits_index.len);
 
-    // sort logits by value
-    for (logits, logits_index, 0..) |logit, *logidex, i| {
+    // elements smaller than (1 - p) / (n - 1) cannot be part of the result
+    // and can be filtered out directly
+    const cutoff: f32 = (1 - p) / (@as(f32, @floatFromInt(logits.len)) - 1);
+    var num_to_sort: usize = 0;
+    for (0..logits.len) |i| {
         assert(i < std.math.maxInt(u32));
-        logidex.value = logit;
-        logidex.index = @intCast(i);
+        if (logits[i] >= cutoff) {
+            logits_index[num_to_sort].value = logits[i];
+            logits_index[num_to_sort].index = @intCast(i);
+            num_to_sort += 1;
+        }
     }
-    std.sort.pdq(IndexedF32, logits_index, {}, IndexedF32.desc);
+    assert(num_to_sort > 0);
+
+    // sort the remaining elements
+    std.sort.pdq(IndexedF32, logits_index[0..num_to_sort], {}, IndexedF32.desc);
 
     // find the cutoff index
     var cumulative_prob: f32 = 0.0;
-    var cutoff_index: usize = 0;
-    for (logits_index, 0..) |*logidex, i| {
-        cumulative_prob += logidex.value;
+    var cutoff_index: usize = num_to_sort - 1; // default to last element
+    for (0..num_to_sort) |i| {
+        cumulative_prob += logits_index[i].value;
         if (cumulative_prob > p) {
             cutoff_index = i;
             break;
@@ -690,10 +699,10 @@ fn sample_top_p(logits: []f32, p: f32, logits_index: []IndexedF32) usize {
     var rng = std.rand.DefaultPrng.init(0);
     const r = rng.random().float(f32) * cumulative_prob;
     var cdf: f32 = 0.0;
-    for (logits_index[0..cutoff_index]) |*logidex| {
-        cdf += logidex.value;
+    for (0..cutoff_index + 1) |i| {
+        cdf += logits_index[i].value;
         if (r < cdf) {
-            return logidex.index;
+            return logits_index[i].index;
         }
     }
     return logits_index[cutoff_index].index;

@@ -56,7 +56,7 @@ Options:
  -p, --top-p <float>       p value in top-p (nucleus) sampling. default 1.0, 0 || 1 = off
  -n, --seq-len <int>       number of steps to run for, default 256. 0 = max_seq_len
  -i, --input <string>      input text for the prompt, default ""
- -v, --verbose             print model info and tokens/s 
+ -v, --verbose             print model info and tokens/s
 ```
 
 ## Performance
@@ -92,7 +92,7 @@ language implementations (no OpenBlas, etc.).
 
 | Implementation                        | Tokens/s |
 | ------------------------------------- | -------- |
-| llama2.zig (this repo)                | 295      |
+| llama2.zig (this repo)                | 504      |
 | llama2.c `make runfast -march=native` | 241      |
 
 ## Multi-threaded
@@ -186,3 +186,5 @@ and/or performance comparisons as well as the code to reproduce them.
   [PR](https://github.com/karpathy/llama2.c/pull/94/files) on the llama2.c repo
   that was the inspiration for aligned memory allocation and fused matrix
   multiplication.
+- [jrudolph](https://github.com/jrudolph) for top-p sampling optimization
+  [PR](https://github.com/karpathy/llama2.c/pull/276)
