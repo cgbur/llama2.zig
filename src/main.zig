@@ -708,8 +708,16 @@ const usage_text: []const u8 =
     \\ -p, --top-p <float>       p value in top-p (nucleus) sampling. default 1.0, 0 || 1 = off
     \\ -n, --seq-len <int>       number of steps to run for, default 256. 0 = max_seq_len
     \\ -i, --input <string>      input text for the prompt, default ""
+    \\ -v, --verbose             print model info and tokens/s 
     \\
 ;
+
+var verbose: bool = false;
+fn log(comptime format: []const u8, args: anytype) void {
+    if (verbose) {
+        std.debug.print(format, args);
+    }
+}
 
 pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -789,7 +797,10 @@ pub fn main() !void {
                 std.process.exit(1);
             }
             input = args[arg_i];
+        } else if (std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "--verbose")) {
+            verbose = true;
         } else {
+            std.debug.print("error: unknown argument '{s}'\n", .{arg});
             try stdout.writeAll(usage_text);
             return std.process.cleanExit();
         }
@@ -805,11 +816,12 @@ pub fn main() !void {
     checkpoint.close();
     const config = config_read.config(); // convert to usize version
 
-    std.debug.print("config: {any}\n", .{config});
-    std.debug.print("shared weights: {any}\n", .{shared_weights});
-    std.debug.print("temperature: {d}\n", .{temperature});
-    std.debug.print("vector size: {d}\n", .{DEFAULT_VECTOR_WIDTH});
-    std.debug.print("\n", .{});
+    log("config: {any}\n", .{config});
+    log("shared weights: {any}\n", .{shared_weights});
+    log("temperature: {d}\n", .{temperature});
+    log("top-p: {d}\n", .{top_p});
+    log("SIMD vector size: {d}\n", .{DEFAULT_VECTOR_WIDTH});
+    log("\n", .{});
 
     // mmap the checkpoint to directly map the weights
     const mapped_checkpoint = try (std.fs.cwd().openFile(bin_path.?, .{}));
@@ -885,10 +897,10 @@ pub fn main() !void {
     }
     const time = timer.?.read();
     const tokens_per_ms = @as(f64, @floatFromInt(pos - 1)) / @as(f64, @floatFromInt(time / std.time.ns_per_ms));
-    const tokens_per_sec = tokens_per_ms * 1000.0;
+    const tokens_per_sec: u32 = @intFromFloat(tokens_per_ms * 1000.0);
 
     // print tokens per second
-    std.debug.print("\n\n{d} tokens per second\n", .{tokens_per_sec});
+    log("\n\n{d} tokens per second\n", .{tokens_per_sec});
 }
 
 test "matrix_multiplies" {
