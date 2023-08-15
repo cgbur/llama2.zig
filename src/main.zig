@@ -842,11 +842,21 @@ pub fn main() !void {
     log("SIMD vector size: {d}\n", .{DEFAULT_VECTOR_WIDTH});
     log("\n", .{});
 
-    // mmap the checkpoint to directly map the weights
-    const mapped_checkpoint = try (std.fs.cwd().openFile(bin_path.?, .{}));
+    const mapped_checkpoint = try std.fs.cwd().openFile(bin_path.?, .{});
     defer mapped_checkpoint.close();
-    const data: []align(mem.page_size) u8 = try std.os.mmap(null, file_size, std.os.PROT.READ, std.os.MAP.PRIVATE, mapped_checkpoint.handle, 0);
-    defer std.os.munmap(data);
+    const data: []align(mem.page_size) u8 = blk: {
+        const buffer = try allocator.alignedAlloc(u8, mem.page_size, file_size);
+        const read_len = try mapped_checkpoint.readAll(buffer);
+        if (read_len != file_size) {
+            std.debug.print("error: failed to read checkpoint file\n", .{});
+            std.process.exit(1);
+        }
+        break :blk buffer;
+        // mmap seems slower
+        // break :blk try std.os.mmap(null, file_size, std.os.PROT.READ, std.os.MAP.PRIVATE, mapped_checkpoint.handle, 0);
+    };
+    defer allocator.free(data);
+
     const weights = Weights.init(&config, data[@sizeOf(ConfigReader)..], shared_weights);
 
     // load the tokens for the model
