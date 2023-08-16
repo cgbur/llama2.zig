@@ -172,6 +172,9 @@ strip = "symbols"
 - \[ \] Add support for multi-threading (this is not going well)
 - \[x\] Top-p sampling is really slow, maybe some way to speed it up
 - \[ \] Try top-p sampling by doing multiple linear scans to avoid sorting
+- \[ \] Add multi-query attention https://github.com/karpathy/llama2.c/commit/38bfac90a887a1f8d7b61849f4ec58e26b267efe
+- \[ \] binary search the token encoder, probably not necessary
+- \[ \] Add the smaller model and tokenizer to the repo, with the `-z` flag to load a custom tokenizer
 
 ## Contributing
 
