@@ -834,13 +834,13 @@ pub fn main() !void {
     }
 
     // read the config from the checkpoint
-    var checkpoint = try std.fs.cwd().openFile(bin_path.?, .{}); // close this by hand
+    var checkpoint = try std.fs.cwd().openFile(bin_path.?, .{});
+    // close by hand
     var config_read: ConfigReader = try checkpoint.reader().readStruct(ConfigReader);
     // negative vocab size is hacky way of signaling unshared weights. bit yikes.
     const shared_weights: bool = config_read.vocab_size > 0;
     config_read.vocab_size = try std.math.absInt(config_read.vocab_size);
     const file_size = (try checkpoint.stat()).size;
-    checkpoint.close();
     const config = config_read.config(); // convert to usize version
 
     log("config: {any}\n", .{config});
@@ -850,22 +850,22 @@ pub fn main() !void {
     log("SIMD vector size: {d}\n", .{DEFAULT_VECTOR_WIDTH});
     log("\n", .{});
 
-    const mapped_checkpoint = try std.fs.cwd().openFile(bin_path.?, .{});
-    defer mapped_checkpoint.close();
     const data: []align(mem.page_size) u8 = blk: {
-        const buffer = try allocator.alignedAlloc(u8, mem.page_size, file_size);
-        const read_len = try mapped_checkpoint.readAll(buffer);
-        if (read_len != file_size) {
+        const weights_size: usize = file_size - @sizeOf(ConfigReader);
+        const buffer = try allocator.alignedAlloc(u8, mem.page_size, weights_size);
+        const read_len = try checkpoint.readAll(buffer);
+        if (read_len != weights_size) {
             std.debug.print("error: failed to read checkpoint file\n", .{});
             std.process.exit(1);
         }
+        checkpoint.close();
         break :blk buffer;
         // mmap seems slower
         // break :blk try std.os.mmap(null, file_size, std.os.PROT.READ, std.os.MAP.PRIVATE, mapped_checkpoint.handle, 0);
     };
     defer allocator.free(data);
 
-    const weights = Weights.init(&config, data[@sizeOf(ConfigReader)..], shared_weights);
+    const weights = Weights.init(&config, data, shared_weights);
 
     // load the tokens for the model
     const tokenizer = try Tokenizer.fromFile("tokenizer.bin", config.vocab_size, allocator);
