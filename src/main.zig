@@ -219,7 +219,7 @@ const Tokenizer = struct {
         var token_buf: []u32 = try allocator.alloc(u32, input.len); // worst case is every byte is a token
 
         const max_allowed_token_len = 128;
-        if (self.max_token_len > max_allowed_token_len) {
+        if (self.max_token_len * 2 > max_allowed_token_len) { // x2 for concat
             return error.TokensTooLong;
         }
 
