@@ -16,6 +16,8 @@ It currently supports:
 - Top-p (nucleus) sampling
 - Prompt handling (bpe tokenization)
 - Sequence length control
+- Custom tokenizers
+- Multiquery support
 - Running really fast
 
 The ultimate goal is to create a fast, portable, and user-friendly
@@ -92,8 +94,8 @@ language implementations (no OpenBlas, etc.).
 
 | Implementation                        | Tokens/s |
 | ------------------------------------- | -------- |
-| llama2.zig (this repo)                | 596      |
-| llama2.c `make runfast -march=native` | 241      |
+| llama2.zig (this repo)                | 579      |
+| llama2.c `make runfast -march=native` | 463      |
 
 ## Multi-threaded
 
@@ -167,14 +169,11 @@ strip = "symbols"
 
 ## Todo
 
-- \[ \] Incorporate the Python script used to generate checkpoints
 - \[ \] Parallelize multi-head attention process
 - \[ \] Add support for multi-threading (this is not going well)
-- \[x\] Top-p sampling is really slow, maybe some way to speed it up
 - \[ \] Try top-p sampling by doing multiple linear scans to avoid sorting
-- \[ \] Add multi-query attention https://github.com/karpathy/llama2.c/commit/38bfac90a887a1f8d7b61849f4ec58e26b267efe
 - \[ \] binary search the token encoder, probably not necessary
-- \[ \] Add the smaller model and tokenizer to the repo, with the `-z` flag to load a custom tokenizer
+- \[ \] Add benchmarks for smaller model and tokenizer
 
 ## Contributing
 
