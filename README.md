@@ -174,6 +174,10 @@ strip = "symbols"
 - \[ \] Try top-p sampling by doing multiple linear scans to avoid sorting
 - \[ \] binary search the token encoder, probably not necessary
 - \[ \] Add benchmarks for smaller model and tokenizer
+- \[ \] On very small models (like ~100K params) the speed is slower than the
+  original llama2.c. Figure out why. expf seems to take a lot of time. GCC also
+  doing much better than clang. Think floating point reordering is helping a lot
+  there.
 
 ## Contributing
 
