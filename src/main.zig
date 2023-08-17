@@ -309,14 +309,19 @@ fn transformer(token: usize, pos: usize, config: *const Config, s: *RunState, w:
         rmsnorm(s.xb, x, w.rms_att_weight[l * dim ..][0..dim]);
 
         // qkv
-        // matmul_fused(3, [_][]f32{ s.q, s.k, s.v }, s.xb, [_][]f32{
-        //     w.wq[l * dim * dim ..][0 .. dim * dim],
-        //     w.wk[l * dim * kv_dim ..][0 .. dim * kv_dim],
-        //     w.wv[l * dim * kv_dim ..][0 .. dim * kv_dim],
-        // });
-        matmul(s.q, s.xb, w.wq[l * dim * dim ..][0 .. dim * dim]);
-        matmul(s.k, s.xb, w.wk[l * dim * kv_dim ..][0 .. dim * kv_dim]);
-        matmul(s.v, s.xb, w.wv[l * dim * kv_dim ..][0 .. dim * kv_dim]);
+        if (kv_dim == dim) {
+            matmul_fused(3, [_][]f32{ s.q, s.k, s.v }, s.xb, [_][]f32{
+                w.wq[l * dim * dim ..][0 .. dim * dim],
+                w.wk[l * dim * kv_dim ..][0 .. dim * kv_dim],
+                w.wv[l * dim * kv_dim ..][0 .. dim * kv_dim],
+            });
+        } else {
+            matmul(s.q, s.xb, w.wq[l * dim * dim ..][0 .. dim * dim]);
+            matmul_fused(2, [_][]f32{ s.k, s.v }, s.xb, [_][]f32{
+                w.wk[l * dim * kv_dim ..][0 .. dim * kv_dim],
+                w.wv[l * dim * kv_dim ..][0 .. dim * kv_dim],
+            });
+        }
 
         // // RoPE relative positional encoding: complex-valued rotate q and k by freq_cis in each head
         for (0..2) |v| {
@@ -936,7 +941,16 @@ pub fn main() !void {
             tokenizer.tokens[next][1..]
         else
             tokenizer.tokens[next];
-        try stdout.print("{s}", .{token_str});
+
+        // handle case when tokens are raw bytes
+        if (isRawByte(token_str)) |byte| {
+            try stdout.print("{c}", .{byte});
+            token = next;
+            continue;
+        } else {
+            try stdout.print("{s}", .{token_str});
+        }
+
         token = next;
 
         // if timer is null, start it
@@ -950,6 +964,31 @@ pub fn main() !void {
 
     // print tokens per second
     log("\n\n{d} tokens per second\n", .{tokens_per_sec});
+}
+
+/// Matches the pattern <0xXX> where XX is a hex number and
+/// returns the byte value of the hex number.
+fn isRawByte(input: []const u8) ?u8 {
+    if (input.len != 6) return null;
+    if (input[0] != '<' or input[1] != '0' or input[2] != 'x' or input[5] != '>') return null;
+    var byte: u8 = 0;
+    for (input[3..5]) |c| {
+        byte *= 16;
+        if (c >= '0' and c <= '9') {
+            byte += c - '0';
+        } else if (c >= 'a' and c <= 'f') {
+            byte += c - 'a' + 10;
+        } else if (c >= 'A' and c <= 'F') {
+            byte += c - 'A' + 10;
+        } else {
+            return null;
+        }
+    }
+    if (std.ascii.isPrint(byte) or std.ascii.isWhitespace(byte)) {
+        return byte;
+    } else {
+        return null;
+    }
 }
 
 test "matrix_multiplies" {
