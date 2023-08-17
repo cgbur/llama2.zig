@@ -715,7 +715,7 @@ const usage_text: []const u8 =
     \\Options:
     \\ -h, --help                print this help message
     \\ -t, --temperature <float> temperature, default 1.0 (0.0, 1]
-    \\ -p, --top-p <float>       p value in top-p (nucleus) sampling. default 1.0, 0 || 1 = off
+    \\ -p, --top-p <float>       p value in top-p (nucleus) sampling. default 0.9, 0 || 1 = off
     \\ -n, --seq-len <int>       number of steps to run for, default 256. 0 = max_seq_len
     \\ -i, --input <string>      input text for the prompt, default ""
     \\ -s, --seed <int>          random seed, default to time
@@ -747,7 +747,7 @@ pub fn main() !void {
     var bin_path: ?[]const u8 = null;
     var input: ?[]const u8 = null;
     var temperature: f32 = 1.0;
-    var top_p: f32 = 1.0;
+    var top_p: f32 = 0.9;
     var seq_len: usize = 0;
     var tokenizer_path: []const u8 = "tokenizer.bin";
     prng = std.rand.DefaultPrng.init(blk: {
