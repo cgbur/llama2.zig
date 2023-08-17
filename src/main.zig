@@ -717,6 +717,7 @@ const usage_text: []const u8 =
     \\ -i, --input <string>      input text for the prompt, default ""
     \\ -s, --seed <int>          random seed, default to time
     \\ -v, --verbose             print model info and tokens/s 
+    \\ -z, --tokenizer <path>    path to the tokenizer to use, default to "tokenizer.bin"
     \\
 ;
 
@@ -745,6 +746,7 @@ pub fn main() !void {
     var temperature: f32 = 1.0;
     var top_p: f32 = 1.0;
     var seq_len: usize = 0;
+    var tokenizer_path: []const u8 = "tokenizer.bin";
     prng = std.rand.DefaultPrng.init(blk: {
         var seed: u64 = undefined;
         try std.os.getrandom(std.mem.asBytes(&seed));
@@ -811,6 +813,13 @@ pub fn main() !void {
                 std.process.exit(1);
             }
             input = args[arg_i];
+        } else if (std.mem.eql(u8, arg, "-z") or std.mem.eql(u8, arg, "--tokenizer")) {
+            arg_i += 1;
+            if (arg_i >= args.len) {
+                std.debug.print("error: missing argument for tokenizer\n", .{});
+                std.process.exit(1);
+            }
+            tokenizer_path = args[arg_i];
         } else if (std.mem.eql(u8, arg, "-s") or std.mem.eql(u8, arg, "--seed")) {
             arg_i += 1;
             if (arg_i >= args.len) {
@@ -868,7 +877,7 @@ pub fn main() !void {
     const weights = Weights.init(&config, data[@sizeOf(ConfigReader)..], shared_weights);
 
     // load the tokens for the model
-    const tokenizer = try Tokenizer.fromFile("tokenizer.bin", config.vocab_size, allocator);
+    const tokenizer = try Tokenizer.fromFile(tokenizer_path, config.vocab_size, allocator);
     defer tokenizer.deinit(allocator);
 
     // initialize the run state for inference
