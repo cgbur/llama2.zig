@@ -64,7 +64,7 @@ const Weights = struct {
     w2: [*]f32, // (layer, dim, hidden_dim)
     w3: [*]f32, // (layer, hidden_dim, dim)
     rms_final_weight: [*]f32, // (dim,)
-    // freq_cis for RoPE relatively positional embeddings
+    // freq_cis for RoPE relatively positional embeddings (not used currently)
     freq_cis_real: [*]f32, // (seq_len, head_size/2)
     freq_cis_imag: [*]f32, // (seq_len, head_size/2)
     // (optional) classifier weights for the logits, on the last layer
@@ -288,7 +288,7 @@ const Tokenizer = struct {
 
 fn transformer(token: usize, pos: usize, config: *const Config, s: *RunState, w: *const Weights) void {
     // convenience variables
-    const dim = config.dim;
+    const dim: usize = config.dim;
     const hidden_dim = config.hidden_dim;
     const head_size = dim / config.n_heads;
     const kv_dim = (dim * config.n_kv_heads) / config.n_heads;
@@ -300,8 +300,8 @@ fn transformer(token: usize, pos: usize, config: *const Config, s: *RunState, w:
     @memcpy(x, embedding_row);
 
     // pluck out the "pos" row of the freq_cis real and imaginary parts
-    const freq_cis_real_row = w.freq_cis_real[pos * head_size / 2 ..][0 .. head_size / 2];
-    const freq_cis_imag_row = w.freq_cis_imag[pos * head_size / 2 ..][0 .. head_size / 2];
+    // const freq_cis_real_row = w.freq_cis_real[pos * head_size / 2 ..][0 .. head_size / 2];
+    // const freq_cis_imag_row = w.freq_cis_imag[pos * head_size / 2 ..][0 .. head_size / 2];
 
     // forward all the layers
     for (0..config.n_layers) |l| {
@@ -324,15 +324,31 @@ fn transformer(token: usize, pos: usize, config: *const Config, s: *RunState, w:
         }
 
         // // RoPE relative positional encoding: complex-valued rotate q and k by freq_cis in each head
-        for (0..2) |v| {
-            const vec = if (v == 0) s.q else s.k;
-            const vec_size = if (v == 0) dim else kv_dim;
-            var i: usize = 0;
-            while (i < vec_size) : (i += 2) {
+        // for (0..2) |v| {
+        //     const vec = if (v == 0) s.q else s.k;
+        //     const vec_size = if (v == 0) dim else kv_dim;
+        //     var i: usize = 0;
+        //     while (i < vec_size) : (i += 2) {
+        //         const v0 = vec[i];
+        //         const v1 = vec[i + 1];
+        //         const fcr = freq_cis_real_row[(i % head_size) / 2];
+        //         const fci = freq_cis_imag_row[(i % head_size) / 2];
+        //         vec[i] = v0 * fcr - v1 * fci;
+        //         vec[i + 1] = v0 * fci + v1 * fcr;
+        //     }
+        // }
+        var i: usize = 0;
+        while (i < dim) : (i += 2) {
+            const head_dim: f32 = @floatFromInt(i % head_size);
+            const freq = 1.0 / std.math.pow(f32, 10000.0, head_dim / (@as(f32, @floatFromInt(head_size))));
+            const val: f32 = @as(f32, @floatFromInt(pos)) * freq;
+            const fcr = std.math.cos(val);
+            const fci = std.math.sin(val);
+            const rotn: usize = if (i < kv_dim) 2 else 1; // how many vectors? 2 = q & k, 1 = q only
+            for (0..rotn) |v| {
+                const vec = if (v == 0) s.q else s.k; // the vector to rotate (query or key)
                 const v0 = vec[i];
                 const v1 = vec[i + 1];
-                const fcr = freq_cis_real_row[(i % head_size) / 2];
-                const fci = freq_cis_imag_row[(i % head_size) / 2];
                 vec[i] = v0 * fcr - v1 * fci;
                 vec[i + 1] = v0 * fci + v1 * fcr;
             }
@@ -340,7 +356,7 @@ fn transformer(token: usize, pos: usize, config: *const Config, s: *RunState, w:
 
         // save key,value at the current timestep to our kv cache
         const loff = l * config.seq_len * kv_dim; // kv cache offset
-        const key_cache_row = s.key_cache[loff + pos * kv_dim ..][0..kv_dim]; // TODO: double check length
+        const key_cache_row = s.key_cache[loff + pos * kv_dim ..][0..kv_dim];
         const value_cache_row = s.value_cache[loff + pos * kv_dim ..][0..kv_dim];
         @memcpy(key_cache_row, s.k);
         @memcpy(value_cache_row, s.v);
