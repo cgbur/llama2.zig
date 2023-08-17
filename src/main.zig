@@ -54,10 +54,11 @@ const Weights = struct {
     token_embedding_table: [*]f32, // (vocab_size, dim)
     rms_att_weight: [*]f32, // (layer, dim) rmsnorm weights
     rms_ffn_weight: [*]f32, // (layer, dim)
-    wq: [*]f32, // (layer, dim, dim)
-    wk: [*]f32, // (layer, dim, dim)
-    wv: [*]f32, // (layer, dim, dim)
-    wo: [*]f32, // (layer, dim, dim)
+    // weights for matmuls (dim == n_heads * head_size)
+    wq: [*]f32, // (layer, dim, n_heads * head_size)
+    wk: [*]f32, // (layer, dim, n_kv_heads * head_size)
+    wv: [*]f32, // (layer, dim, n_kv_heads * head_size)
+    wo: [*]f32, // (layer, n_heads * head_size, dim)
     // weights for ffn
     w1: [*]f32, // (layer, hidden_dim, dim)
     w2: [*]f32, // (layer, dim, hidden_dim)
@@ -75,7 +76,9 @@ const Weights = struct {
         const hidden_dim: usize = config.hidden_dim;
         const n_layers: usize = config.n_layers;
         const n_heads: usize = config.n_heads;
+        const n_kv_heads: usize = config.n_kv_heads;
         const seq_len: usize = config.seq_len;
+        const head_size: usize = dim / n_heads;
 
         var weights: Weights = undefined;
 
@@ -85,13 +88,13 @@ const Weights = struct {
         weights.rms_att_weight = ptr;
         ptr += n_layers * dim;
         weights.wq = ptr;
-        ptr += n_layers * dim * dim;
+        ptr += n_layers * dim * (n_heads * head_size);
         weights.wk = ptr;
-        ptr += n_layers * dim * dim;
+        ptr += n_layers * dim * (n_kv_heads * head_size);
         weights.wv = ptr;
-        ptr += n_layers * dim * dim;
+        ptr += n_layers * dim * (n_kv_heads * head_size);
         weights.wo = ptr;
-        ptr += n_layers * dim * dim;
+        ptr += n_layers * (n_heads * head_size) * dim;
         weights.rms_ffn_weight = ptr;
         ptr += n_layers * dim;
         weights.w1 = ptr;
@@ -103,7 +106,6 @@ const Weights = struct {
         weights.rms_final_weight = ptr;
         ptr += dim;
         weights.freq_cis_real = ptr;
-        var head_size: usize = dim / n_heads;
         ptr += seq_len * head_size / 2;
         weights.freq_cis_imag = ptr;
         ptr += seq_len * head_size / 2;
@@ -133,6 +135,7 @@ const RunState = struct {
     value_cache: []align(simd_align) f32, // (layer, seq_len, dim)
 
     fn init(allocator: Allocator, config: *const Config) !Self {
+        const kv_dim = (config.dim * config.n_kv_heads) / config.n_heads;
         return Self{
             .x = try allocator.alignedAlloc(f32, simd_align, config.dim),
             .xb = try allocator.alignedAlloc(f32, simd_align, config.dim),
@@ -140,13 +143,13 @@ const RunState = struct {
             .hb = try allocator.alignedAlloc(f32, simd_align, config.hidden_dim),
             .hb2 = try allocator.alignedAlloc(f32, simd_align, config.hidden_dim),
             .q = try allocator.alignedAlloc(f32, simd_align, config.dim),
-            .k = try allocator.alignedAlloc(f32, simd_align, config.dim),
-            .v = try allocator.alignedAlloc(f32, simd_align, config.dim),
+            .k = try allocator.alignedAlloc(f32, simd_align, kv_dim),
+            .v = try allocator.alignedAlloc(f32, simd_align, kv_dim),
             .att = try allocator.alignedAlloc(f32, simd_align, config.n_heads * config.seq_len),
             .logits = try allocator.alignedAlloc(f32, simd_align, config.vocab_size),
-            .key_cache = try allocator.alignedAlloc(f32, simd_align, config.n_layers * config.seq_len * config.dim),
-            .value_cache = try allocator.alignedAlloc(f32, simd_align, config.n_layers * config.seq_len * config.dim),
             .logits_indexed = try allocator.alignedAlloc(IndexedF32, simd_align, config.vocab_size),
+            .key_cache = try allocator.alignedAlloc(f32, simd_align, config.n_layers * config.seq_len * kv_dim),
+            .value_cache = try allocator.alignedAlloc(f32, simd_align, config.n_layers * config.seq_len * kv_dim),
         };
     }
 
@@ -288,6 +291,8 @@ fn transformer(token: usize, pos: usize, config: *const Config, s: *RunState, w:
     const dim = config.dim;
     const hidden_dim = config.hidden_dim;
     const head_size = dim / config.n_heads;
+    const kv_dim = (dim * config.n_kv_heads) / config.n_heads;
+    const kv_mul = config.n_heads / config.n_kv_heads; // kv sharing in mutliquery attention
     var x = s.x;
 
     // copy the token embedding into x
@@ -304,36 +309,34 @@ fn transformer(token: usize, pos: usize, config: *const Config, s: *RunState, w:
         rmsnorm(s.xb, x, w.rms_att_weight[l * dim ..][0..dim]);
 
         // qkv
-        // matmul(s.q, s.xb, w.wq[l * dim * dim ..][0 .. dim * dim]);
-        // matmul(s.k, s.xb, w.wk[l * dim * dim ..][0 .. dim * dim]);
-        // matmul(s.v, s.xb, w.wv[l * dim * dim ..][0 .. dim * dim]);
-        // fused version of the above
-        matmul_fused(3, [_][]f32{ s.q, s.k, s.v }, s.xb, [_][]f32{
-            w.wq[l * dim * dim ..][0 .. dim * dim],
-            w.wk[l * dim * dim ..][0 .. dim * dim],
-            w.wv[l * dim * dim ..][0 .. dim * dim],
-        });
+        // matmul_fused(3, [_][]f32{ s.q, s.k, s.v }, s.xb, [_][]f32{
+        //     w.wq[l * dim * dim ..][0 .. dim * dim],
+        //     w.wk[l * dim * kv_dim ..][0 .. dim * kv_dim],
+        //     w.wv[l * dim * kv_dim ..][0 .. dim * kv_dim],
+        // });
+        matmul(s.q, s.xb, w.wq[l * dim * dim ..][0 .. dim * dim]);
+        matmul(s.k, s.xb, w.wk[l * dim * kv_dim ..][0 .. dim * kv_dim]);
+        matmul(s.v, s.xb, w.wv[l * dim * kv_dim ..][0 .. dim * kv_dim]);
 
-        // RoPe relative positional encoding: complex-valued rotation of q and
-        // k by freq_cis in each head
-        var i: usize = 0;
-        while (i < dim) : (i += 2) {
-            const q0 = s.q[i];
-            const q1 = s.q[i + 1];
-            const k0 = s.k[i];
-            const k1 = s.k[i + 1];
-            const fcr = freq_cis_real_row[(i % head_size) / 2];
-            const fci = freq_cis_imag_row[(i % head_size) / 2];
-            s.q[i] = q0 * fcr - q1 * fci;
-            s.q[i + 1] = q0 * fci + q1 * fcr;
-            s.k[i] = k0 * fcr - k1 * fci;
-            s.k[i + 1] = k0 * fci + k1 * fcr;
+        // // RoPE relative positional encoding: complex-valued rotate q and k by freq_cis in each head
+        for (0..2) |v| {
+            const vec = if (v == 0) s.q else s.k;
+            const vec_size = if (v == 0) dim else kv_dim;
+            var i: usize = 0;
+            while (i < vec_size) : (i += 2) {
+                const v0 = vec[i];
+                const v1 = vec[i + 1];
+                const fcr = freq_cis_real_row[(i % head_size) / 2];
+                const fci = freq_cis_imag_row[(i % head_size) / 2];
+                vec[i] = v0 * fcr - v1 * fci;
+                vec[i + 1] = v0 * fci + v1 * fcr;
+            }
         }
 
         // save key,value at the current timestep to our kv cache
-        const loff = l * config.seq_len * dim; // kv cache offset
-        const key_cache_row = s.key_cache[loff + pos * dim ..][0..dim];
-        const value_cache_row = s.value_cache[loff + pos * dim ..][0..dim];
+        const loff = l * config.seq_len * kv_dim; // kv cache offset
+        const key_cache_row = s.key_cache[loff + pos * kv_dim ..][0..kv_dim]; // TODO: double check length
+        const value_cache_row = s.value_cache[loff + pos * kv_dim ..][0..kv_dim];
         @memcpy(key_cache_row, s.k);
         @memcpy(value_cache_row, s.v);
 
@@ -346,7 +349,7 @@ fn transformer(token: usize, pos: usize, config: *const Config, s: *RunState, w:
             // iterate over the timesteps, including the current one
             for (0..pos + 1) |t| {
                 // get the key for this timestep
-                const k = s.key_cache[loff + t * dim + h * head_size ..][0..head_size];
+                const k = s.key_cache[loff + t * kv_dim + (h / kv_mul) * head_size ..][0..head_size];
                 // attn score as the dot of q and k
                 var score: f32 = vector_dot_product(q, k);
                 score /= std.math.sqrt(@as(f32, @floatFromInt(head_size)));
@@ -362,7 +365,7 @@ fn transformer(token: usize, pos: usize, config: *const Config, s: *RunState, w:
             @memset(xb, 0);
             for (0..pos + 1) |t| {
                 // get the value vec for this head and timestep
-                const v = s.value_cache[loff + t * dim + h * head_size ..][0..head_size];
+                const v = s.value_cache[loff + t * kv_dim + (h / kv_mul) * head_size ..][0..head_size];
                 // get the attention weight for this timestep
                 const a = att[t];
                 // accumulate the weighted value vector into xb
