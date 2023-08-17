@@ -95,7 +95,7 @@ language implementations (no OpenBlas, etc.).
 | Implementation                        | Tokens/s |
 | ------------------------------------- | -------- |
 | llama2.zig (this repo)                | 579      |
-| llama2.c `make runfast -march=native` | 241      |
+| llama2.c `make runfast -march=native` | 463      |
 
 ## Multi-threaded
 
