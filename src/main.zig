@@ -4,12 +4,11 @@ const Allocator = mem.Allocator;
 const assert = std.debug.assert;
 const ThreadPool = std.Thread.Pool;
 
-const DEFAULT_VECTOR_WIDTH: usize = std.simd.suggestVectorSize(f32) orelse 4;
+const DEFAULT_VECTOR_WIDTH: usize = std.simd.suggestVectorLength(f32) orelse 4;
 const simd_align = @alignOf(@Vector(DEFAULT_VECTOR_WIDTH, f32));
 
 comptime {
-    // TODO: seems to not have any effect
-    @setFloatMode(std.builtin.FloatMode.Optimized);
+    @setFloatMode(.optimized);
 }
 
 /// Configuration for the model that can be read from the file. Extern and i32
@@ -182,11 +181,11 @@ const Tokenizer = struct {
         var tokens: Tokenizer = undefined;
         tokens.tokens = try allocator.alloc([]u8, vocab_size);
         tokens.scores = try allocator.alloc(f32, vocab_size);
-        tokens.max_token_len = try reader.readInt(@TypeOf(tokens.max_token_len), std.builtin.Endian.Little);
+        tokens.max_token_len = try reader.readInt(@TypeOf(tokens.max_token_len), .little);
 
         for (0..vocab_size) |i| {
-            tokens.scores[i] = @bitCast(try reader.readInt(u32, std.builtin.Endian.Little));
-            const token_len = try reader.readInt(u32, std.builtin.Endian.Little);
+            tokens.scores[i] = @bitCast(try reader.readInt(u32, .little));
+            const token_len = try reader.readInt(u32, .little);
             tokens.tokens[i] = try allocator.alloc(u8, token_len);
             const read_amt = try reader.read(tokens.tokens[i]);
             if (read_amt != token_len) {
@@ -237,7 +236,7 @@ const Tokenizer = struct {
         var token_end_idx: usize = 0;
         while (idx < input.len) {
             const utf_len = try std.unicode.utf8ByteSequenceLength(input[idx]);
-            var codepoint: u21 = try std.unicode.utf8Decode(input[idx..][0..utf_len]);
+            const codepoint: u21 = try std.unicode.utf8Decode(input[idx..][0..utf_len]);
             const encoded_len = try std.unicode.utf8Encode(codepoint, &utf_encoded_buffer);
             token_buf[token_end_idx] = self.lookup(utf_encoded_buffer[0..encoded_len]) orelse {
                 return error.TokenNotFound;
@@ -293,7 +292,7 @@ fn transformer(token: usize, pos: usize, config: *const Config, s: *RunState, w:
     const head_size = dim / config.n_heads;
     const kv_dim = (dim * config.n_kv_heads) / config.n_heads;
     const kv_mul = config.n_heads / config.n_kv_heads; // kv sharing in mutliquery attention
-    var x = s.x;
+    const x = s.x;
 
     // copy the token embedding into x
     const embedding_row = w.token_embedding_table[token * dim ..][0..dim];
@@ -661,7 +660,7 @@ fn argmax(x: []f32) usize {
 fn sample(x: []f32) usize {
     assert(x.len > 0);
     const random = prng.random();
-    var r = random.float(f32);
+    const r = random.float(f32);
 
     var cdf: f32 = 0.0;
     for (x, 0..) |val, i| {
@@ -771,11 +770,7 @@ pub fn main() !void {
     var top_p: f32 = 0.9;
     var seq_len: usize = 0;
     var tokenizer_path: []const u8 = "tokenizer.bin";
-    prng = std.rand.DefaultPrng.init(blk: {
-        var seed: u64 = undefined;
-        try std.os.getrandom(std.mem.asBytes(&seed));
-        break :blk seed;
-    });
+    prng = std.rand.DefaultPrng.init(@truncate(@as(u128, @bitCast(std.time.nanoTimestamp()))));
 
     // parse args
     var arg_i: usize = 1;
@@ -872,7 +867,7 @@ pub fn main() !void {
     var config_read: ConfigReader = try checkpoint.reader().readStruct(ConfigReader);
     // negative vocab size is hacky way of signaling unshared weights. bit yikes.
     const shared_weights: bool = config_read.vocab_size > 0;
-    config_read.vocab_size = try std.math.absInt(config_read.vocab_size);
+    config_read.vocab_size = @intCast(@abs(config_read.vocab_size));
     const file_size = (try checkpoint.stat()).size;
     const config = config_read.config(); // convert to usize version
 
@@ -1036,12 +1031,12 @@ test "vector_length_less_than_width_case" {
 
 test "vector_weighted_sum_length_less_than_width_case" {
     var x = [_]f32{ 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0 };
-    var y: f32 = 3.0;
+    const y: f32 = 3.0;
     var xout = [_]f32{ 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0 };
 
     vector_weighted_sum(&xout, &x, y);
     for (0..xout.len) |i| {
-        var expected = (x[i] * y) + x[i];
+        const expected = (x[i] * y) + x[i];
         try std.testing.expect((xout[i] - expected) < 0.0001);
     }
 }

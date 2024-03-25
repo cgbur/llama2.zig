@@ -28,7 +28,7 @@ pub fn build(b: *std.Build) void {
 
     const is_debug = optimize == .Debug;
     if (!is_debug and !disable_strip) {
-        exe.strip = true;
+        exe.root_module.strip = true;
     }
 
     // This declares intent for the executable to be installed into the
