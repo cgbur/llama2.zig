@@ -197,9 +197,6 @@ const Tokenizer = struct {
         for (self.tokens) |token| {
             allocator.free(token);
         }
-        // for (self.scores) |score| {
-        //     allocator.free(score);
-        // }
         allocator.free(self.tokens);
         allocator.free(self.scores);
     }
