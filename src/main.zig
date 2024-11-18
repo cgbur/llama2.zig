@@ -187,10 +187,7 @@ const Tokenizer = struct {
             tokens.scores[i] = @bitCast(try reader.readInt(u32, .little));
             const token_len = try reader.readInt(u32, .little);
             tokens.tokens[i] = try allocator.alloc(u8, token_len);
-            const read_amt = try reader.read(tokens.tokens[i]);
-            if (read_amt != token_len) {
-                return error.UnexpectedEof;
-            }
+            try reader.readNoEof(tokens.tokens[i]);
         }
 
         return tokens;
@@ -200,6 +197,9 @@ const Tokenizer = struct {
         for (self.tokens) |token| {
             allocator.free(token);
         }
+        // for (self.scores) |score| {
+        //     allocator.free(score);
+        // }
         allocator.free(self.tokens);
         allocator.free(self.scores);
     }
@@ -739,12 +739,12 @@ const usage_text: []const u8 =
     \\ -n, --seq-len <int>       number of steps to run for, default 256. 0 = max_seq_len
     \\ -i, --input <string>      input text for the prompt, default ""
     \\ -s, --seed <int>          random seed, default to time
-    \\ -v, --verbose             print model info and tokens/s 
+    \\ -v, --verbose             print model info and tokens/s
     \\ -z, --tokenizer <path>    path to the tokenizer to use, default to "tokenizer.bin"
     \\
 ;
 
-var prng: std.rand.DefaultPrng = undefined;
+var prng: std.Random.DefaultPrng = undefined;
 var verbose: bool = false;
 fn log(comptime format: []const u8, args: anytype) void {
     if (verbose) {
@@ -770,7 +770,7 @@ pub fn main() !void {
     var top_p: f32 = 0.9;
     var seq_len: usize = 0;
     var tokenizer_path: []const u8 = "tokenizer.bin";
-    prng = std.rand.DefaultPrng.init(@truncate(@as(u128, @bitCast(std.time.nanoTimestamp()))));
+    prng = std.Random.DefaultPrng.init(@truncate(@as(u128, @bitCast(std.time.nanoTimestamp()))));
 
     // parse args
     var arg_i: usize = 1;
@@ -851,7 +851,7 @@ pub fn main() !void {
                 });
                 std.process.exit(1);
             };
-            prng = std.rand.DefaultPrng.init(seed);
+            prng = std.Random.DefaultPrng.init(seed);
         } else if (std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "--verbose")) {
             verbose = true;
         } else {
