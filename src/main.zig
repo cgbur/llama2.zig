@@ -342,7 +342,10 @@ fn transformer(token: usize, pos: usize, config: *const Config, s: *RunState, w:
             const fci = std.math.sin(val);
             const rotn: usize = if (i < kv_dim) 2 else 1; // how many vectors? 2 = q & k, 1 = q only
             for (0..rotn) |v| {
-                const vec = if (v == 0) s.q else s.k; // the vector to rotate (query or key)
+                const vec = switch (v) {
+                    0 => s.q,
+                    else => s.k,
+                }; // the vector to rotate (query or key)
                 const v0 = vec[i];
                 const v1 = vec[i + 1];
                 vec[i] = v0 * fcr - v1 * fci;
@@ -511,7 +514,10 @@ fn vector_dot_product(x: []const f32, y: []const f32) f32 {
 
 /// Does matrix vector multiplication using comptime to dynamically generate the fused steps.
 fn matmul_fused(comptime N: usize, outs: [N][]f32, x: []const f32, ws: [N][]const f32) void {
-    if (N == 0) @compileError("N must be greater than 0");
+    switch (N) {
+        0 => @compileError("N must be greater than 0"),
+        else => {},
+    }
     // go through and check that all the dimensions are correct
     inline for (0..N) |i| {
         assert(outs[i].len > 0);
@@ -915,7 +921,10 @@ pub fn main() !void {
     var timer: ?std.time.Timer = null;
 
     // adjust the sequence length if needed
-    seq_len = if (seq_len == 0) config.seq_len else seq_len;
+    seq_len = switch (seq_len) {
+        0 => config.seq_len,
+        else => seq_len,
+    };
     seq_len = std.math.clamp(seq_len, 1, config.seq_len); // clamp to seq_len
     var pos: usize = 0; // the current position in the sequence
     while (pos < seq_len) : (pos += 1) {
@@ -932,7 +941,7 @@ pub fn main() !void {
                     for (state.logits) |*val| val.* /= temperature;
                 }
                 softmax(state.logits);
-                next = if (top_p == 0.0 or top_p == 1.0)
+                next = if (top_p == 0.0 or top_p == 0.1)
                     sample(state.logits)
                 else
                     sample_top_p(state.logits, top_p, state.logits_indexed);
@@ -940,8 +949,9 @@ pub fn main() !void {
         }
 
         // 1 = <BOS> which ends the sequence
-        if (next == 1) {
-            break;
+        switch (next) {
+            1 => break,
+            else => {},
         }
 
         // print the token, at the start of the sequence we don't want to print the space
@@ -982,14 +992,11 @@ fn isRawByte(input: []const u8) ?u8 {
     var byte: u8 = 0;
     for (input[3..5]) |c| {
         byte *= 16;
-        if (c >= '0' and c <= '9') {
-            byte += c - '0';
-        } else if (c >= 'a' and c <= 'f') {
-            byte += c - 'a' + 10;
-        } else if (c >= 'A' and c <= 'F') {
-            byte += c - 'A' + 10;
-        } else {
-            return null;
+        switch (c) {
+            '0'...'9' => byte += c - '0',
+            'a'...'f' => byte += c - 'a' + 10,
+            'A'...'F' => byte += c - 'A' + 10,
+            else => return null,
         }
     }
     if (std.ascii.isPrint(byte) or std.ascii.isWhitespace(byte)) {
