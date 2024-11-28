@@ -941,7 +941,7 @@ pub fn main() !void {
                     for (state.logits) |*val| val.* /= temperature;
                 }
                 softmax(state.logits);
-                next = if (top_p == 0.0 or top_p == 0.1)
+                next = if (top_p == 0.0 or top_p == 1.0)
                     sample(state.logits)
                 else
                     sample_top_p(state.logits, top_p, state.logits_indexed);
