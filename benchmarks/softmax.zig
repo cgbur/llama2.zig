@@ -78,7 +78,7 @@ fn softmax(x: []f32) void {
 
 pub fn main() !void {
     // generate 1mb of f32 random data
-    var rng = std.rand.DefaultPrng.init(0);
+    var rng = std.Random.DefaultPrng.init(0);
     var r = rng.random();
     const size: usize = 30_000;
     const num_runs: usize = 10000;
