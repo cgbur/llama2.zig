@@ -20,6 +20,9 @@ It currently supports:
 - Multiquery support
 - Running really fast
 
+An NVIDIA GPU implementation is available on the
+[`CUDA`](https://github.com/cgbur/llama2.zig/tree/CUDA) branch.
+
 The ultimate goal is to create a fast, portable, and user-friendly
 implementation of the llama2 model architecture. The code prioritizes simplicity
 and readability without sacrificing performance. Certain core functions have
