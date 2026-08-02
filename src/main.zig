@@ -2,11 +2,33 @@ const std = @import("std");
 const mem = std.mem;
 const Allocator = mem.Allocator;
 const assert = std.debug.assert;
-const ThreadPool = std.Thread.Pool;
 
-const DEFAULT_VECTOR_WIDTH: usize = std.simd.suggestVectorLength(f32) orelse 4;
-const simd_align = @alignOf(@Vector(DEFAULT_VECTOR_WIDTH, f32));
-const simd_alignment: mem.Alignment = .fromByteUnits(simd_align);
+const CudaBackend = opaque {};
+const CudaConfig = extern struct {
+    dim: i32,
+    hidden_dim: i32,
+    n_layers: i32,
+    n_heads: i32,
+    n_kv_heads: i32,
+    vocab_size: i32,
+    seq_len: i32,
+};
+
+extern fn llama2_cuda_create(
+    config: *const CudaConfig,
+    weights: [*]const f32,
+    weights_count: usize,
+    shared_weights: i32,
+) ?*CudaBackend;
+extern fn llama2_cuda_forward(
+    context: *CudaBackend,
+    token: i32,
+    pos: i32,
+    host_logits: ?[*]f32,
+    host_next: *i32,
+) i32;
+extern fn llama2_cuda_destroy(context: *CudaBackend) void;
+extern fn llama2_cuda_last_error() [*:0]const u8;
 
 comptime {
     @setFloatMode(.optimized);
@@ -48,115 +70,22 @@ const Config = struct {
     seq_len: usize, // max sequence length
 };
 
-/// Weights for the model held as f32 manypointers. Need to look into if slices
-/// can be used for this easily.
-const Weights = struct {
-    token_embedding_table: [*]f32, // (vocab_size, dim)
-    rms_att_weight: [*]f32, // (layer, dim) rmsnorm weights
-    rms_ffn_weight: [*]f32, // (layer, dim)
-    // weights for matmuls (dim == n_heads * head_size)
-    wq: [*]f32, // (layer, dim, n_heads * head_size)
-    wk: [*]f32, // (layer, dim, n_kv_heads * head_size)
-    wv: [*]f32, // (layer, dim, n_kv_heads * head_size)
-    wo: [*]f32, // (layer, n_heads * head_size, dim)
-    // weights for ffn
-    w1: [*]f32, // (layer, hidden_dim, dim)
-    w2: [*]f32, // (layer, dim, hidden_dim)
-    w3: [*]f32, // (layer, hidden_dim, dim)
-    rms_final_weight: [*]f32, // (dim,)
-    // freq_cis for RoPE relatively positional embeddings (not used currently)
-    freq_cis_real: [*]f32, // (seq_len, head_size/2)
-    freq_cis_imag: [*]f32, // (seq_len, head_size/2)
-    // (optional) classifier weights for the logits, on the last layer
-    wcls: [*]f32, // (vocab_size, dim)
+const SamplingState = struct {
+    logits: []f32,
+    logits_indexed: []IndexedF32,
 
-    fn init(config: *const Config, data: []u8, shared_weights: bool) Weights {
-        const vocab_size: usize = config.vocab_size;
-        const dim: usize = config.dim;
-        const hidden_dim: usize = config.hidden_dim;
-        const n_layers: usize = config.n_layers;
-        const n_heads: usize = config.n_heads;
-        const n_kv_heads: usize = config.n_kv_heads;
-        const seq_len: usize = config.seq_len;
-        const head_size: usize = dim / n_heads;
-
-        var weights: Weights = undefined;
-
-        var ptr: [*]f32 = @ptrCast(@alignCast(data));
-        weights.token_embedding_table = ptr;
-        ptr += vocab_size * dim;
-        weights.rms_att_weight = ptr;
-        ptr += n_layers * dim;
-        weights.wq = ptr;
-        ptr += n_layers * dim * (n_heads * head_size);
-        weights.wk = ptr;
-        ptr += n_layers * dim * (n_kv_heads * head_size);
-        weights.wv = ptr;
-        ptr += n_layers * dim * (n_kv_heads * head_size);
-        weights.wo = ptr;
-        ptr += n_layers * (n_heads * head_size) * dim;
-        weights.rms_ffn_weight = ptr;
-        ptr += n_layers * dim;
-        weights.w1 = ptr;
-        ptr += n_layers * dim * hidden_dim;
-        weights.w2 = ptr;
-        ptr += n_layers * hidden_dim * dim;
-        weights.w3 = ptr;
-        ptr += n_layers * dim * hidden_dim;
-        weights.rms_final_weight = ptr;
-        ptr += dim;
-        weights.freq_cis_real = ptr;
-        ptr += seq_len * head_size / 2;
-        weights.freq_cis_imag = ptr;
-        ptr += seq_len * head_size / 2;
-        weights.wcls = if (shared_weights) weights.token_embedding_table else ptr;
-
-        return weights;
-    }
-};
-
-/// The state of the model while running
-const RunState = struct {
-    const Self = @This();
-
-    x: []align(simd_align) f32, // activation at current time stamp (dim,)
-    xb: []align(simd_align) f32, // same, but inside a residual branch (dim,)
-    xb2: []align(simd_align) f32, // an additional buffer just for convenience (dim,)
-    hb: []align(simd_align) f32, // buffer for hidden dimension in the ffn (hidden_dim,)
-    hb2: []align(simd_align) f32, // buffer for hidden dimension in the ffn (hidden_dim,)
-    q: []align(simd_align) f32, // query (dim,)
-    k: []align(simd_align) f32, // key (dim,)
-    v: []align(simd_align) f32, // value (dim,)
-    att: []align(simd_align) f32, // buffer for scores/attention values (n_heads, seq_len)
-    logits: []align(simd_align) f32, // output logits
-    logits_indexed: []align(simd_align) IndexedF32, // logits with index for top_p sampling
-    // kv cache
-    key_cache: []align(simd_align) f32, // (layer, seq_len, dim)
-    value_cache: []align(simd_align) f32, // (layer, seq_len, dim)
-
-    fn init(allocator: Allocator, config: *const Config) !Self {
-        const kv_dim = (config.dim * config.n_kv_heads) / config.n_heads;
-        return Self{
-            .x = try allocator.alignedAlloc(f32, simd_alignment, config.dim),
-            .xb = try allocator.alignedAlloc(f32, simd_alignment, config.dim),
-            .xb2 = try allocator.alignedAlloc(f32, simd_alignment, config.dim),
-            .hb = try allocator.alignedAlloc(f32, simd_alignment, config.hidden_dim),
-            .hb2 = try allocator.alignedAlloc(f32, simd_alignment, config.hidden_dim),
-            .q = try allocator.alignedAlloc(f32, simd_alignment, config.dim),
-            .k = try allocator.alignedAlloc(f32, simd_alignment, kv_dim),
-            .v = try allocator.alignedAlloc(f32, simd_alignment, kv_dim),
-            .att = try allocator.alignedAlloc(f32, simd_alignment, config.n_heads * config.seq_len),
-            .logits = try allocator.alignedAlloc(f32, simd_alignment, config.vocab_size),
-            .logits_indexed = try allocator.alignedAlloc(IndexedF32, simd_alignment, config.vocab_size),
-            .key_cache = try allocator.alignedAlloc(f32, simd_alignment, config.n_layers * config.seq_len * kv_dim),
-            .value_cache = try allocator.alignedAlloc(f32, simd_alignment, config.n_layers * config.seq_len * kv_dim),
+    fn init(allocator: Allocator, vocab_size: usize) !SamplingState {
+        const logits = try allocator.alloc(f32, vocab_size);
+        errdefer allocator.free(logits);
+        return .{
+            .logits = logits,
+            .logits_indexed = try allocator.alloc(IndexedF32, vocab_size),
         };
     }
 
-    fn deinit(self: *Self, allocator: Allocator) void {
-        inline for (std.meta.fields(Self)) |f| {
-            allocator.free(@field(self, f.name));
-        }
+    fn deinit(self: *SamplingState, allocator: Allocator) void {
+        allocator.free(self.logits);
+        allocator.free(self.logits_indexed);
         self.* = undefined;
     }
 };
@@ -282,408 +211,6 @@ const Tokenizer = struct {
     }
 };
 
-fn transformer(token: usize, pos: usize, config: *const Config, s: *RunState, w: *const Weights) void {
-    // convenience variables
-    const dim: usize = config.dim;
-    const hidden_dim = config.hidden_dim;
-    const head_size = dim / config.n_heads;
-    const kv_dim = (dim * config.n_kv_heads) / config.n_heads;
-    const kv_mul = config.n_heads / config.n_kv_heads; // kv sharing in mutliquery attention
-    const x = s.x;
-
-    // copy the token embedding into x
-    const embedding_row = w.token_embedding_table[token * dim ..][0..dim];
-    @memcpy(x, embedding_row);
-
-    // pluck out the "pos" row of the freq_cis real and imaginary parts
-    // const freq_cis_real_row = w.freq_cis_real[pos * head_size / 2 ..][0 .. head_size / 2];
-    // const freq_cis_imag_row = w.freq_cis_imag[pos * head_size / 2 ..][0 .. head_size / 2];
-
-    // forward all the layers
-    for (0..config.n_layers) |l| {
-        // attention rmsnorm
-        rmsnorm(s.xb, x, w.rms_att_weight[l * dim ..][0..dim]);
-
-        // qkv
-        if (kv_dim == dim) {
-            matmul_fused(3, [_][]f32{ s.q, s.k, s.v }, s.xb, [_][]f32{
-                w.wq[l * dim * dim ..][0 .. dim * dim],
-                w.wk[l * dim * kv_dim ..][0 .. dim * kv_dim],
-                w.wv[l * dim * kv_dim ..][0 .. dim * kv_dim],
-            });
-        } else {
-            matmul(s.q, s.xb, w.wq[l * dim * dim ..][0 .. dim * dim]);
-            matmul_fused(2, [_][]f32{ s.k, s.v }, s.xb, [_][]f32{
-                w.wk[l * dim * kv_dim ..][0 .. dim * kv_dim],
-                w.wv[l * dim * kv_dim ..][0 .. dim * kv_dim],
-            });
-        }
-
-        // // RoPE relative positional encoding: complex-valued rotate q and k by freq_cis in each head
-        // for (0..2) |v| {
-        //     const vec = if (v == 0) s.q else s.k;
-        //     const vec_size = if (v == 0) dim else kv_dim;
-        //     var i: usize = 0;
-        //     while (i < vec_size) : (i += 2) {
-        //         const v0 = vec[i];
-        //         const v1 = vec[i + 1];
-        //         const fcr = freq_cis_real_row[(i % head_size) / 2];
-        //         const fci = freq_cis_imag_row[(i % head_size) / 2];
-        //         vec[i] = v0 * fcr - v1 * fci;
-        //         vec[i + 1] = v0 * fci + v1 * fcr;
-        //     }
-        // }
-        var i: usize = 0;
-        while (i < dim) : (i += 2) {
-            const head_dim: f32 = @floatFromInt(i % head_size);
-            const freq = 1.0 / std.math.pow(f32, 10000.0, head_dim / (@as(f32, @floatFromInt(head_size))));
-            const val: f32 = @as(f32, @floatFromInt(pos)) * freq;
-            const fcr = std.math.cos(val);
-            const fci = std.math.sin(val);
-            const rotn: usize = if (i < kv_dim) 2 else 1; // how many vectors? 2 = q & k, 1 = q only
-            for (0..rotn) |v| {
-                const vec = if (v == 0) s.q else s.k; // the vector to rotate (query or key)
-                const v0 = vec[i];
-                const v1 = vec[i + 1];
-                vec[i] = v0 * fcr - v1 * fci;
-                vec[i + 1] = v0 * fci + v1 * fcr;
-            }
-        }
-
-        // save key,value at the current timestep to our kv cache
-        const loff = l * config.seq_len * kv_dim; // kv cache offset
-        const key_cache_row = s.key_cache[loff + pos * kv_dim ..][0..kv_dim];
-        const value_cache_row = s.value_cache[loff + pos * kv_dim ..][0..kv_dim];
-        @memcpy(key_cache_row, s.k);
-        @memcpy(value_cache_row, s.v);
-
-        // attention
-        for (0..config.n_heads) |h| {
-            // get the query vector for this head
-            const q = s.q[h * head_size ..][0..head_size];
-            // attention scores
-            const att = s.att[h * config.seq_len ..][0..config.seq_len];
-            // iterate over the timesteps, including the current one
-            for (0..pos + 1) |t| {
-                // get the key for this timestep
-                const k = s.key_cache[loff + t * kv_dim + (h / kv_mul) * head_size ..][0..head_size];
-                // attn score as the dot of q and k
-                var score: f32 = vector_dot_product(q, k);
-                score /= std.math.sqrt(@as(f32, @floatFromInt(head_size)));
-                // save the score
-                att[t] = score;
-            }
-
-            // softmax the scores to get the attention weights for 0..pos inclusive
-            softmax(att[0 .. pos + 1]);
-
-            // weighted sum of the value vectors store back into xb
-            const xb = s.xb[h * head_size ..][0..head_size];
-            const value_head_offset = (h / kv_mul) * head_size;
-            vector_weighted_sum_rows(
-                xb,
-                s.value_cache[loff + value_head_offset ..],
-                kv_dim,
-                att[0 .. pos + 1],
-            );
-        }
-
-        // final matmul to get the output of attention
-        matmul(s.xb2, s.xb, w.wo[l * dim * dim ..][0 .. dim * dim]);
-
-        // residual connection back into x
-        accum(x, s.xb2);
-
-        // ffn rmsnorm
-        rmsnorm(s.xb, x, w.rms_ffn_weight[l * dim ..][0..dim]);
-
-        // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
-        // first calculate self.w1(x) and self.w3(x)
-        // matmul(s.hb, s.xb, w.w1[l * dim * hidden_dim ..][0 .. dim * hidden_dim]);
-        // matmul(s.hb2, s.xb, w.w3[l * dim * hidden_dim ..][0 .. dim * hidden_dim]);
-        // fused version of the above
-        matmul_fused(2, [_][]f32{ s.hb, s.hb2 }, s.xb, [_][]f32{
-            w.w1[l * dim * hidden_dim ..][0 .. dim * hidden_dim],
-            w.w3[l * dim * hidden_dim ..][0 .. dim * hidden_dim],
-        });
-
-        // F.silu; silu(x)=x*σ(x),where σ(x) is the logistic sigmoid
-        for (s.hb) |*v| {
-            v.* = v.* * (1.0 / (1.0 + std.math.exp(-v.*)));
-        }
-
-        // elementwise multiply with w3(x)
-        vector_mul(s.hb, s.hb2);
-
-        // final matmul to get the output of FFN
-        matmul(s.xb, s.hb, w.w2[l * dim * hidden_dim ..][0 .. hidden_dim * dim]);
-
-        // residual connection
-        accum(x, s.xb);
-    }
-
-    // final rmsnorm
-    rmsnorm(x, x, w.rms_final_weight[0..dim]);
-
-    // classify into logits
-    matmul(s.logits, x, w.wcls[0 .. dim * config.vocab_size]);
-}
-
-fn rmsnorm(o: []f32, x: []f32, w: []f32) void {
-    assert(o.len == x.len);
-    assert(o.len == w.len);
-
-    const vector_width = DEFAULT_VECTOR_WIDTH;
-    const vector_len = x.len / vector_width;
-    const remainder_start = vector_len * vector_width;
-
-    // sum of squares
-    var vector_sum: @Vector(vector_width, f32) = @splat(0.0);
-    var offset: usize = 0;
-    for (0..vector_len) |_| {
-        const values: @Vector(vector_width, f32) = x[offset..][0..vector_width].*;
-        vector_sum += values * values;
-        offset += vector_width;
-    }
-    var sum = @reduce(.Add, vector_sum);
-    for (x[remainder_start..]) |val| {
-        sum += val * val;
-    }
-    sum /= @floatFromInt(x.len);
-    sum += 1e-5;
-    sum = 1.0 / std.math.sqrt(sum);
-
-    // normalize and scale
-    const scale: @Vector(vector_width, f32) = @splat(sum);
-    offset = 0;
-    for (0..vector_len) |_| {
-        const values: @Vector(vector_width, f32) = x[offset..][0..vector_width].*;
-        const weights: @Vector(vector_width, f32) = w[offset..][0..vector_width].*;
-        o[offset..][0..vector_width].* = values * scale * weights;
-        offset += vector_width;
-    }
-    for (remainder_start..o.len) |i| {
-        o[i] = x[i] * sum * w[i];
-    }
-}
-
-/// W (d,n) @ x (n,) -> xout (d,)
-///
-/// This is a SIMD matrix multiplication function implementation. Matrices
-/// dimensions are inferred from the lengths of the slices. xout must have same
-/// length as the number of rows in W. x must have same length as the number of
-/// columns in W. The layout of W is row-major.
-///
-///                  W
-/// +---------+     +---------+     +---------+
-/// |         |     |         |     |         |
-/// |   d x n |  @  |   n x 1 |  =  |   d x 1 |
-/// |         |     |         |     |         |
-/// +---------+     +---------+     +---------+
-///     W                x             xout
-///
-fn matmul(xout: []f32, x: []const f32, w: []const f32) void {
-    // // This one function accounts for ~90% of the total runtime.
-    // const d = xout.len;
-    // const n = x.len;
-    // assert(w.len == n * d);
-    // assert(w.len > 0);
-    //
-    // // unrolling doesn't seem to help
-    // for (0..d) |i| {
-    //     const wrow = w[i * n ..][0..n]; // row i of W
-    //     xout[i] = vector_dot_product(wrow, x);
-    // }
-    matmul_fused(1, [_][]f32{xout}, x, [_][]const f32{w});
-}
-
-/// Computes the vector addition of two vectors and then accumulates the result
-/// into a scalar. Handles the case where the vector length is not a multiple
-/// of the SIMD vector width.
-fn vector_dot_product(x: []const f32, y: []const f32) f32 {
-    assert(x.len == y.len);
-    const vector_width = DEFAULT_VECTOR_WIDTH;
-    const vec_len = x.len / vector_width; // num of SIMD vectors
-    const vec_rem = x.len % vector_width; // num of f32 in the last SIMD vector
-
-    // do the bulk of the work with SIMD
-    var sum: @Vector(vector_width, f32) = @splat(0.0);
-    var offset: usize = 0;
-    for (0..vec_len) |_| {
-        const xvec: @Vector(vector_width, f32) = x[offset..][0..vector_width].*;
-        const yvec: @Vector(vector_width, f32) = y[offset..][0..vector_width].*;
-        sum += xvec * yvec;
-        offset += vector_width;
-    }
-
-    // handle the last few elements with normal scalar ops
-    var sum_rem: f32 = 0.0;
-    for (0..vec_rem) |i| {
-        sum_rem += x[offset + i] * y[offset + i];
-    }
-
-    // reduce the SIMD vector to a scalar
-    return @reduce(.Add, sum) + sum_rem;
-}
-
-/// Does matrix vector multiplication using comptime to dynamically generate the fused steps.
-fn matmul_fused(comptime N: usize, outs: [N][]f32, x: []const f32, ws: [N][]const f32) void {
-    if (N == 0) @compileError("N must be greater than 0");
-    // go through and check that all the dimensions are correct
-    inline for (0..N) |i| {
-        assert(outs[i].len > 0);
-        assert(ws[i].len > 0);
-        assert(ws[i].len == x.len * outs[i].len);
-        if (i > 0) {
-            assert(outs[i].len == outs[i - 1].len);
-            assert(ws[i].len == ws[i - 1].len);
-        }
-    }
-
-    const vector_width = DEFAULT_VECTOR_WIDTH;
-    const vec_len = x.len / vector_width;
-    const vec_rem = x.len % vector_width;
-    const accumulator_count = if (N == 1) 8 else 4;
-    const unrolled_vec_len = vec_len / accumulator_count;
-    const trailing_vec_len = vec_len % accumulator_count;
-
-    const d = outs[0].len;
-    const n = x.len;
-
-    for (0..d) |i| {
-        // pick out rows of W
-        var wrows: [N][]const f32 = undefined;
-        inline for (0..N) |j| {
-            wrows[j] = ws[j][i * n ..][0..n];
-        }
-
-        // Independent accumulators avoid a loop-carried FMA dependency.
-        var sums: [N][accumulator_count]@Vector(vector_width, f32) = undefined;
-        inline for (0..N) |j| {
-            inline for (0..accumulator_count) |accumulator| {
-                sums[j][accumulator] = @splat(0.0);
-            }
-        }
-
-        var offset: usize = 0;
-        for (0..unrolled_vec_len) |_| {
-            inline for (0..accumulator_count) |accumulator| {
-                const xvec: @Vector(vector_width, f32) = x[offset..][0..vector_width].*;
-                inline for (0..N) |j| {
-                    const wvec: @Vector(vector_width, f32) = wrows[j][offset..][0..vector_width].*;
-                    sums[j][accumulator] += xvec * wvec;
-                }
-                offset += vector_width;
-            }
-        }
-        for (0..trailing_vec_len) |accumulator| {
-            const xvec: @Vector(vector_width, f32) = x[offset..][0..vector_width].*;
-            inline for (0..N) |j| {
-                const wvec: @Vector(vector_width, f32) = wrows[j][offset..][0..vector_width].*;
-                sums[j][accumulator] += xvec * wvec;
-            }
-            offset += vector_width;
-        }
-
-        // process remaining elements with scalar ops
-        var sums_rem: [N]f32 = [1]f32{0.0} ** N;
-        for (0..vec_rem) |a| {
-            inline for (0..N) |j| {
-                sums_rem[j] += x[offset + a] * wrows[j][offset + a];
-            }
-        }
-
-        // reduce SIMD vector to scalar
-        inline for (0..N) |j| {
-            var sum = sums[j][0];
-            inline for (1..accumulator_count) |accumulator| {
-                sum += sums[j][accumulator];
-            }
-            outs[j][i] = @reduce(.Add, sum) + sums_rem[j];
-        }
-    }
-}
-
-/// Computes vector vector multiplication elementwise and stores the result in the first vector.
-fn vector_mul(x: []f32, y: []const f32) void {
-    assert(x.len == y.len);
-    const vector_width = DEFAULT_VECTOR_WIDTH;
-    const vec_len = x.len / vector_width; // num of SIMD vectors
-    const vec_rem = x.len % vector_width; // num of f32 in the last SIMD vector
-
-    // do the bulk of the work with SIMD
-    var offset: usize = 0;
-    for (0..vec_len) |_| {
-        var xvec: @Vector(vector_width, f32) = x[offset..][0..vector_width].*;
-        const yvec: @Vector(vector_width, f32) = y[offset..][0..vector_width].*;
-        xvec *= yvec;
-        x[offset..][0..vector_width].* = xvec;
-        offset += vector_width;
-    }
-
-    // handle the last few elements with normal scalar ops
-    for (0..vec_rem) |i| {
-        x[offset + i] *= y[offset + i];
-    }
-}
-
-/// Performs a weighted vector sum operation using SIMD for efficiency.
-/// The operation performed is xout = xout + x * y where x is a vector and y is a scalar.
-fn vector_weighted_sum(xout: []f32, x: []const f32, y: f32) void {
-    assert(xout.len == x.len);
-    const vector_width = DEFAULT_VECTOR_WIDTH;
-    const vec_len = x.len / vector_width; // num of SIMD vectors
-    const vec_rem = x.len % vector_width; // num of f32 in the last SIMD vector
-
-    // do the bulk of the work with SIMD
-    var offset: usize = 0;
-    const yvector: @Vector(vector_width, f32) = @splat(y);
-    for (0..vec_len) |_| {
-        var xoutvec: @Vector(vector_width, f32) = xout[offset..][0..vector_width].*;
-        const xvec: @Vector(vector_width, f32) = x[offset..][0..vector_width].*;
-        xoutvec += xvec * yvector;
-        xout[offset..][0..vector_width].* = xoutvec;
-        offset += vector_width;
-    }
-
-    // handle the last few elements with normal scalar operations
-    for (0..vec_rem) |i| {
-        xout[offset + i] += x[offset + i] * y;
-    }
-}
-
-/// Computes a weighted sum across strided rows while keeping each output
-/// vector in a register for the full reduction.
-fn vector_weighted_sum_rows(xout: []f32, rows: []const f32, row_stride: usize, weights: []const f32) void {
-    assert(xout.len > 0);
-    assert(weights.len > 0);
-    assert(row_stride >= xout.len);
-    assert(rows.len >= (weights.len - 1) * row_stride + xout.len);
-
-    const vector_width = DEFAULT_VECTOR_WIDTH;
-    const vector_len = xout.len / vector_width;
-    const remainder_start = vector_len * vector_width;
-
-    var offset: usize = 0;
-    for (0..vector_len) |_| {
-        var sum: @Vector(vector_width, f32) = @splat(0.0);
-        for (weights, 0..) |weight, row| {
-            const values: @Vector(vector_width, f32) = rows[row * row_stride + offset ..][0..vector_width].*;
-            sum += values * @as(@Vector(vector_width, f32), @splat(weight));
-        }
-        xout[offset..][0..vector_width].* = sum;
-        offset += vector_width;
-    }
-
-    for (remainder_start..xout.len) |i| {
-        var sum: f32 = 0.0;
-        for (weights, 0..) |weight, row| {
-            sum += rows[row * row_stride + i] * weight;
-        }
-        xout[i] = sum;
-    }
-}
-
 fn softmax(x: []f32) void {
     assert(x.len > 0);
     // max of x for numerical stability
@@ -703,26 +230,6 @@ fn softmax(x: []f32) void {
     for (x) |*val| {
         val.* /= sum;
     }
-}
-
-fn accum(a: []f32, b: []f32) void {
-    assert(a.len == b.len);
-    for (0..a.len) |i| {
-        a[i] += b[i];
-    }
-}
-
-fn argmax(x: []f32) usize {
-    assert(x.len > 0);
-    var max: f32 = x[0];
-    var maxi: usize = 0;
-    for (1..x.len) |i| {
-        if (x[i] > max) {
-            max = x[i];
-            maxi = i;
-        }
-    }
-    return maxi;
 }
 
 fn sample(x: []f32) usize {
@@ -949,7 +456,6 @@ pub fn main(init: std.process.Init) !void {
     log("shared weights: {any}\n", .{shared_weights});
     log("temperature: {d}\n", .{temperature});
     log("top-p: {d}\n", .{top_p});
-    log("SIMD vector size: {d}\n", .{DEFAULT_VECTOR_WIDTH});
     log("\n", .{});
 
     const data: []align(std.heap.page_size_min) u8 = blk: {
@@ -964,14 +470,32 @@ pub fn main(init: std.process.Init) !void {
     };
     defer allocator.free(data);
 
-    const weights = Weights.init(&config, data, shared_weights);
+    const cuda_config = CudaConfig{
+        .dim = @intCast(config.dim),
+        .hidden_dim = @intCast(config.hidden_dim),
+        .n_layers = @intCast(config.n_layers),
+        .n_heads = @intCast(config.n_heads),
+        .n_kv_heads = @intCast(config.n_kv_heads),
+        .vocab_size = @intCast(config.vocab_size),
+        .seq_len = @intCast(config.seq_len),
+    };
+    const cuda_context = llama2_cuda_create(
+        &cuda_config,
+        @ptrCast(@alignCast(data.ptr)),
+        data.len / @sizeOf(f32),
+        @intFromBool(shared_weights),
+    ) orelse {
+        std.debug.print("error: unable to initialize CUDA: {s}\n", .{llama2_cuda_last_error()});
+        std.process.exit(1);
+    };
+    defer llama2_cuda_destroy(cuda_context);
 
     // load the tokens for the model
     const tokenizer = try Tokenizer.fromFile(tokenizer_path, config.vocab_size, allocator, io);
     defer tokenizer.deinit(allocator);
 
     // initialize the run state for inference
-    var state = try RunState.init(allocator, &config);
+    var state = try SamplingState.init(allocator, config.vocab_size);
     defer state.deinit(allocator);
 
     // encode the prompt
@@ -993,14 +517,26 @@ pub fn main(init: std.process.Init) !void {
     seq_len = std.math.clamp(seq_len, 1, config.seq_len); // clamp to seq_len
     var pos: usize = 0; // the current position in the sequence
     while (pos < seq_len) : (pos += 1) {
-        transformer(token, pos, &config, &state, &weights);
+        var gpu_next: i32 = undefined;
+        const need_logits = pos >= prompt_len and temperature != 0.0;
+        const result = llama2_cuda_forward(
+            cuda_context,
+            @intCast(token),
+            @intCast(pos),
+            if (need_logits) state.logits.ptr else null,
+            &gpu_next,
+        );
+        if (result != 0) {
+            std.debug.print("error: CUDA inference failed: {s}\n", .{llama2_cuda_last_error()});
+            std.process.exit(1);
+        }
 
         // if we have a prompt, we need to feed it in
         if (pos < prompt_len) {
             next = prompt.?[pos];
         } else {
             if (temperature == 0.0) {
-                next = argmax(state.logits);
+                next = @intCast(gpu_next);
             } else {
                 if (temperature != 1.0) {
                     for (state.logits) |*val| val.* /= temperature;
@@ -1072,69 +608,6 @@ fn isRawByte(input: []const u8) ?u8 {
         return byte;
     } else {
         return null;
-    }
-}
-
-test "matrix_multiplies" {
-    var w = [_]f32{ 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0 };
-    var x = [_]f32{ 1.0, 2.0, 3.0 };
-    var xout = [_]f32{ 0.0, 0.0, 0.0 };
-
-    matmul(&xout, &x, &w);
-    try std.testing.expect(xout[0] == 1.0 + 4.0 + 9.0);
-    try std.testing.expect(xout[1] == 4.0 + 10.0 + 18.0);
-    try std.testing.expect(xout[2] == 7.0 + 16.0 + 27.0);
-}
-
-test "vector_length_less_than_width_case" {
-    var w = [_]f32{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24 };
-    var x = [_]f32{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 };
-    var xout = [_]f32{ 0, 0 };
-
-    matmul(&xout, &x, &w);
-
-    var expectedResult = [_]f32{ 0, 0 };
-    for (0..2) |i| {
-        for (0..12) |j| {
-            expectedResult[i] += w[i * 12 + j] * x[j];
-        }
-        try std.testing.expect(xout[i] == expectedResult[i]);
-    }
-}
-
-test "vector_weighted_sum_length_less_than_width_case" {
-    var x = [_]f32{ 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0 };
-    const y: f32 = 3.0;
-    var xout = [_]f32{ 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0 };
-
-    vector_weighted_sum(&xout, &x, y);
-    for (0..xout.len) |i| {
-        const expected = (x[i] * y) + x[i];
-        try std.testing.expect((xout[i] - expected) < 0.0001);
-    }
-}
-
-test "vector_weighted_sum_rows" {
-    const width = DEFAULT_VECTOR_WIDTH + 3;
-    const stride = width + 2;
-    const weights = [_]f32{ 0.25, -0.5, 1.5 };
-    var rows: [stride * weights.len]f32 = undefined;
-    var output: [width]f32 = undefined;
-
-    for (0..weights.len) |row| {
-        for (0..width) |i| {
-            rows[row * stride + i] = @floatFromInt(row * width + i + 1);
-        }
-    }
-
-    vector_weighted_sum_rows(&output, &rows, stride, &weights);
-
-    for (0..width) |i| {
-        var expected: f32 = 0.0;
-        for (weights, 0..) |weight, row| {
-            expected += rows[row * stride + i] * weight;
-        }
-        try std.testing.expectApproxEqAbs(expected, output[i], 1e-5);
     }
 }
 

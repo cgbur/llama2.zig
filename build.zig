@@ -14,6 +14,7 @@ pub fn build(b: *std.Build) void {
     // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall. Here we do not
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
+    const cuda_arch = b.option([]const u8, "cuda-arch", "CUDA GPU architecture") orelse "sm_120";
 
     const exe = b.addExecutable(.{
         .name = "llama2",
@@ -25,6 +26,22 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    const nvcc = b.addSystemCommand(&.{
+        "nvcc",
+        "-O3",
+        "--use_fast_math",
+        "-std=c++17",
+        "-Xcompiler=-fPIC",
+        "-c",
+    });
+    nvcc.addArg(b.fmt("-arch={s}", .{cuda_arch}));
+    nvcc.addFileArg(b.path("src/cuda_backend.cu"));
+    nvcc.addArg("-o");
+    const cuda_object = nvcc.addOutputFileArg("cuda_backend.o");
+    exe.root_module.addObjectFile(cuda_object);
+    exe.root_module.link_libc = true;
+    exe.root_module.link_libcpp = true;
+    exe.root_module.linkSystemLibrary("cudart", .{ .use_pkg_config = .force });
 
     const disable_strip = b.option(bool, "nostrip", "Disable stripping binaries, default is to strip release binaries") orelse false;
 
@@ -70,7 +87,6 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-
     const run_unit_tests = b.addRunArtifact(unit_tests);
 
     // Similar to creating the run step earlier, this exposes a `test` step to

@@ -7,6 +7,9 @@
     .paths = .{
         "build.zig",
         "build.zig.zon",
+        ".envrc",
+        "flake.lock",
+        "flake.nix",
         "src",
         "benchmarks",
         "LICENSE",
