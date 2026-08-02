@@ -435,9 +435,20 @@ fn rmsnorm(o: []f32, x: []f32, w: []f32) void {
     assert(o.len == x.len);
     assert(o.len == w.len);
 
+    const vector_width = DEFAULT_VECTOR_WIDTH;
+    const vector_len = x.len / vector_width;
+    const remainder_start = vector_len * vector_width;
+
     // sum of squares
-    var sum: f32 = 0.0;
-    for (x) |val| {
+    var vector_sum: @Vector(vector_width, f32) = @splat(0.0);
+    var offset: usize = 0;
+    for (0..vector_len) |_| {
+        const values: @Vector(vector_width, f32) = x[offset..][0..vector_width].*;
+        vector_sum += values * values;
+        offset += vector_width;
+    }
+    var sum = @reduce(.Add, vector_sum);
+    for (x[remainder_start..]) |val| {
         sum += val * val;
     }
     sum /= @floatFromInt(x.len);
@@ -445,7 +456,15 @@ fn rmsnorm(o: []f32, x: []f32, w: []f32) void {
     sum = 1.0 / std.math.sqrt(sum);
 
     // normalize and scale
-    for (0..o.len) |i| {
+    const scale: @Vector(vector_width, f32) = @splat(sum);
+    offset = 0;
+    for (0..vector_len) |_| {
+        const values: @Vector(vector_width, f32) = x[offset..][0..vector_width].*;
+        const weights: @Vector(vector_width, f32) = w[offset..][0..vector_width].*;
+        o[offset..][0..vector_width].* = values * scale * weights;
+        offset += vector_width;
+    }
+    for (remainder_start..o.len) |i| {
         o[i] = x[i] * sum * w[i];
     }
 }
