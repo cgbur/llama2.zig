@@ -543,6 +543,9 @@ fn matmul_fused(comptime N: usize, outs: [N][]f32, x: []const f32, ws: [N][]cons
     const vector_width = DEFAULT_VECTOR_WIDTH;
     const vec_len = x.len / vector_width;
     const vec_rem = x.len % vector_width;
+    const accumulator_count = if (N == 1) 8 else 4;
+    const unrolled_vec_len = vec_len / accumulator_count;
+    const trailing_vec_len = vec_len % accumulator_count;
 
     const d = outs[0].len;
     const n = x.len;
@@ -554,15 +557,30 @@ fn matmul_fused(comptime N: usize, outs: [N][]f32, x: []const f32, ws: [N][]cons
             wrows[j] = ws[j][i * n ..][0..n];
         }
 
-        // Initialize sums
-        var sums: [N]@Vector(vector_width, f32) = [1]@Vector(vector_width, f32){@splat(0.0)} ** N;
+        // Independent accumulators avoid a loop-carried FMA dependency.
+        var sums: [N][accumulator_count]@Vector(vector_width, f32) = undefined;
+        inline for (0..N) |j| {
+            inline for (0..accumulator_count) |accumulator| {
+                sums[j][accumulator] = @splat(0.0);
+            }
+        }
 
         var offset: usize = 0;
-        for (0..vec_len) |_| {
+        for (0..unrolled_vec_len) |_| {
+            inline for (0..accumulator_count) |accumulator| {
+                const xvec: @Vector(vector_width, f32) = x[offset..][0..vector_width].*;
+                inline for (0..N) |j| {
+                    const wvec: @Vector(vector_width, f32) = wrows[j][offset..][0..vector_width].*;
+                    sums[j][accumulator] += xvec * wvec;
+                }
+                offset += vector_width;
+            }
+        }
+        for (0..trailing_vec_len) |accumulator| {
             const xvec: @Vector(vector_width, f32) = x[offset..][0..vector_width].*;
             inline for (0..N) |j| {
                 const wvec: @Vector(vector_width, f32) = wrows[j][offset..][0..vector_width].*;
-                sums[j] += xvec * wvec;
+                sums[j][accumulator] += xvec * wvec;
             }
             offset += vector_width;
         }
@@ -577,7 +595,11 @@ fn matmul_fused(comptime N: usize, outs: [N][]f32, x: []const f32, ws: [N][]cons
 
         // reduce SIMD vector to scalar
         inline for (0..N) |j| {
-            outs[j][i] = @reduce(.Add, sums[j]) + sums_rem[j];
+            var sum = sums[j][0];
+            inline for (1..accumulator_count) |accumulator| {
+                sum += sums[j][accumulator];
+            }
+            outs[j][i] = @reduce(.Add, sum) + sums_rem[j];
         }
     }
 }
