@@ -379,15 +379,13 @@ fn transformer(token: usize, pos: usize, config: *const Config, s: *RunState, w:
 
             // weighted sum of the value vectors store back into xb
             const xb = s.xb[h * head_size ..][0..head_size];
-            @memset(xb, 0);
-            for (0..pos + 1) |t| {
-                // get the value vec for this head and timestep
-                const v = s.value_cache[loff + t * kv_dim + (h / kv_mul) * head_size ..][0..head_size];
-                // get the attention weight for this timestep
-                const a = att[t];
-                // accumulate the weighted value vector into xb
-                vector_weighted_sum(xb, v, a);
-            }
+            const value_head_offset = (h / kv_mul) * head_size;
+            vector_weighted_sum_rows(
+                xb,
+                s.value_cache[loff + value_head_offset ..],
+                kv_dim,
+                att[0 .. pos + 1],
+            );
         }
 
         // final matmul to get the output of attention
@@ -629,6 +627,38 @@ fn vector_weighted_sum(xout: []f32, x: []const f32, y: f32) void {
     // handle the last few elements with normal scalar operations
     for (0..vec_rem) |i| {
         xout[offset + i] += x[offset + i] * y;
+    }
+}
+
+/// Computes a weighted sum across strided rows while keeping each output
+/// vector in a register for the full reduction.
+fn vector_weighted_sum_rows(xout: []f32, rows: []const f32, row_stride: usize, weights: []const f32) void {
+    assert(xout.len > 0);
+    assert(weights.len > 0);
+    assert(row_stride >= xout.len);
+    assert(rows.len >= (weights.len - 1) * row_stride + xout.len);
+
+    const vector_width = DEFAULT_VECTOR_WIDTH;
+    const vector_len = xout.len / vector_width;
+    const remainder_start = vector_len * vector_width;
+
+    var offset: usize = 0;
+    for (0..vector_len) |_| {
+        var sum: @Vector(vector_width, f32) = @splat(0.0);
+        for (weights, 0..) |weight, row| {
+            const values: @Vector(vector_width, f32) = rows[row * row_stride + offset ..][0..vector_width].*;
+            sum += values * @as(@Vector(vector_width, f32), @splat(weight));
+        }
+        xout[offset..][0..vector_width].* = sum;
+        offset += vector_width;
+    }
+
+    for (remainder_start..xout.len) |i| {
+        var sum: f32 = 0.0;
+        for (weights, 0..) |weight, row| {
+            sum += rows[row * row_stride + i] * weight;
+        }
+        xout[i] = sum;
     }
 }
 
@@ -1059,6 +1089,30 @@ test "vector_weighted_sum_length_less_than_width_case" {
     for (0..xout.len) |i| {
         const expected = (x[i] * y) + x[i];
         try std.testing.expect((xout[i] - expected) < 0.0001);
+    }
+}
+
+test "vector_weighted_sum_rows" {
+    const width = DEFAULT_VECTOR_WIDTH + 3;
+    const stride = width + 2;
+    const weights = [_]f32{ 0.25, -0.5, 1.5 };
+    var rows: [stride * weights.len]f32 = undefined;
+    var output: [width]f32 = undefined;
+
+    for (0..weights.len) |row| {
+        for (0..width) |i| {
+            rows[row * stride + i] = @floatFromInt(row * width + i + 1);
+        }
+    }
+
+    vector_weighted_sum_rows(&output, &rows, stride, &weights);
+
+    for (0..width) |i| {
+        var expected: f32 = 0.0;
+        for (weights, 0..) |weight, row| {
+            expected += rows[row * stride + i] * weight;
+        }
+        try std.testing.expectApproxEqAbs(expected, output[i], 1e-5);
     }
 }
 
