@@ -6,6 +6,7 @@ const ThreadPool = std.Thread.Pool;
 
 const DEFAULT_VECTOR_WIDTH: usize = std.simd.suggestVectorLength(f32) orelse 4;
 const simd_align = @alignOf(@Vector(DEFAULT_VECTOR_WIDTH, f32));
+const simd_alignment: mem.Alignment = .fromByteUnits(simd_align);
 
 comptime {
     @setFloatMode(.optimized);
@@ -81,7 +82,7 @@ const Weights = struct {
 
         var weights: Weights = undefined;
 
-        var ptr: [*]f32 = @alignCast(@ptrCast(data));
+        var ptr: [*]f32 = @ptrCast(@alignCast(data));
         weights.token_embedding_table = ptr;
         ptr += vocab_size * dim;
         weights.rms_att_weight = ptr;
@@ -136,19 +137,19 @@ const RunState = struct {
     fn init(allocator: Allocator, config: *const Config) !Self {
         const kv_dim = (config.dim * config.n_kv_heads) / config.n_heads;
         return Self{
-            .x = try allocator.alignedAlloc(f32, simd_align, config.dim),
-            .xb = try allocator.alignedAlloc(f32, simd_align, config.dim),
-            .xb2 = try allocator.alignedAlloc(f32, simd_align, config.dim),
-            .hb = try allocator.alignedAlloc(f32, simd_align, config.hidden_dim),
-            .hb2 = try allocator.alignedAlloc(f32, simd_align, config.hidden_dim),
-            .q = try allocator.alignedAlloc(f32, simd_align, config.dim),
-            .k = try allocator.alignedAlloc(f32, simd_align, kv_dim),
-            .v = try allocator.alignedAlloc(f32, simd_align, kv_dim),
-            .att = try allocator.alignedAlloc(f32, simd_align, config.n_heads * config.seq_len),
-            .logits = try allocator.alignedAlloc(f32, simd_align, config.vocab_size),
-            .logits_indexed = try allocator.alignedAlloc(IndexedF32, simd_align, config.vocab_size),
-            .key_cache = try allocator.alignedAlloc(f32, simd_align, config.n_layers * config.seq_len * kv_dim),
-            .value_cache = try allocator.alignedAlloc(f32, simd_align, config.n_layers * config.seq_len * kv_dim),
+            .x = try allocator.alignedAlloc(f32, simd_alignment, config.dim),
+            .xb = try allocator.alignedAlloc(f32, simd_alignment, config.dim),
+            .xb2 = try allocator.alignedAlloc(f32, simd_alignment, config.dim),
+            .hb = try allocator.alignedAlloc(f32, simd_alignment, config.hidden_dim),
+            .hb2 = try allocator.alignedAlloc(f32, simd_alignment, config.hidden_dim),
+            .q = try allocator.alignedAlloc(f32, simd_alignment, config.dim),
+            .k = try allocator.alignedAlloc(f32, simd_alignment, kv_dim),
+            .v = try allocator.alignedAlloc(f32, simd_alignment, kv_dim),
+            .att = try allocator.alignedAlloc(f32, simd_alignment, config.n_heads * config.seq_len),
+            .logits = try allocator.alignedAlloc(f32, simd_alignment, config.vocab_size),
+            .logits_indexed = try allocator.alignedAlloc(IndexedF32, simd_alignment, config.vocab_size),
+            .key_cache = try allocator.alignedAlloc(f32, simd_alignment, config.n_layers * config.seq_len * kv_dim),
+            .value_cache = try allocator.alignedAlloc(f32, simd_alignment, config.n_layers * config.seq_len * kv_dim),
         };
     }
 
@@ -169,25 +170,26 @@ const Tokenizer = struct {
     scores: []f32,
     max_token_len: u32,
 
-    fn fromFile(path: []const u8, vocab_size: usize, allocator: Allocator) !Tokenizer {
-        var token_file = try std.fs.cwd().openFile(path, .{});
-        defer token_file.close();
-        var buf_reader = std.io.bufferedReader(token_file.reader());
-        const tokens = try Tokenizer.init(buf_reader.reader(), allocator, vocab_size);
+    fn fromFile(path: []const u8, vocab_size: usize, allocator: Allocator, io: std.Io) !Tokenizer {
+        const token_file = try std.Io.Dir.cwd().openFile(io, path, .{});
+        defer token_file.close(io);
+        var read_buffer: [4096]u8 = undefined;
+        var file_reader = token_file.reader(io, &read_buffer);
+        const tokens = try Tokenizer.init(&file_reader.interface, allocator, vocab_size);
         return tokens;
     }
 
-    fn init(reader: anytype, allocator: Allocator, vocab_size: usize) !Tokenizer {
+    fn init(reader: *std.Io.Reader, allocator: Allocator, vocab_size: usize) !Tokenizer {
         var tokens: Tokenizer = undefined;
         tokens.tokens = try allocator.alloc([]u8, vocab_size);
         tokens.scores = try allocator.alloc(f32, vocab_size);
-        tokens.max_token_len = try reader.readInt(@TypeOf(tokens.max_token_len), .little);
+        tokens.max_token_len = try reader.takeInt(@TypeOf(tokens.max_token_len), .little);
 
         for (0..vocab_size) |i| {
-            tokens.scores[i] = @bitCast(try reader.readInt(u32, .little));
-            const token_len = try reader.readInt(u32, .little);
+            tokens.scores[i] = @bitCast(try reader.takeInt(u32, .little));
+            const token_len = try reader.takeInt(u32, .little);
             tokens.tokens[i] = try allocator.alloc(u8, token_len);
-            try reader.readNoEof(tokens.tokens[i]);
+            try reader.readSliceAll(tokens.tokens[i]);
         }
 
         return tokens;
@@ -275,10 +277,8 @@ const Tokenizer = struct {
             }
         }
 
-        if (!allocator.resize(token_buf, token_end_idx)) {
-            return error.OutOfMemory;
-        }
-        return token_buf[0..token_end_idx];
+        token_buf = try allocator.realloc(token_buf, token_end_idx);
+        return token_buf;
     }
 };
 
@@ -749,13 +749,16 @@ fn log(comptime format: []const u8, args: anytype) void {
     }
 }
 
-pub fn main() !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-    const stdout = std.io.getStdOut().writer();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.arena.allocator();
+    const io = init.io;
 
-    const args = try std.process.argsAlloc(allocator);
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_file_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
+    const stdout = &stdout_file_writer.interface;
+    defer stdout.flush() catch {};
+
+    const args = try init.minimal.args.toSlice(allocator);
     if (args.len < 2) {
         try stdout.writeAll(usage_text);
         return;
@@ -767,7 +770,8 @@ pub fn main() !void {
     var top_p: f32 = 0.9;
     var seq_len: usize = 0;
     var tokenizer_path: []const u8 = "tokenizer.bin";
-    prng = std.Random.DefaultPrng.init(@truncate(@as(u128, @bitCast(std.time.nanoTimestamp()))));
+    const now_ns = std.Io.Clock.real.now(io).nanoseconds;
+    prng = std.Random.DefaultPrng.init(@truncate(@as(u96, @bitCast(now_ns))));
 
     // parse args
     var arg_i: usize = 1;
@@ -775,7 +779,7 @@ pub fn main() !void {
         const arg = args[arg_i];
         if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
             try stdout.writeAll(usage_text);
-            return std.process.cleanExit();
+            return;
         }
         if (!std.mem.startsWith(u8, arg, "-")) {
             if (bin_path) |_| {
@@ -854,18 +858,20 @@ pub fn main() !void {
         } else {
             std.debug.print("error: unknown argument '{s}'\n", .{arg});
             try stdout.writeAll(usage_text);
-            return std.process.cleanExit();
+            return;
         }
     }
 
     // read the config from the checkpoint
-    var checkpoint = try std.fs.cwd().openFile(bin_path.?, .{});
+    const checkpoint = try std.Io.Dir.cwd().openFile(io, bin_path.?, .{});
     // close by hand
-    var config_read: ConfigReader = try checkpoint.reader().readStruct(ConfigReader);
+    var checkpoint_read_buffer: [4096]u8 = undefined;
+    var checkpoint_reader = checkpoint.reader(io, &checkpoint_read_buffer);
+    var config_read = try checkpoint_reader.interface.takeStruct(ConfigReader, .little);
     // negative vocab size is hacky way of signaling unshared weights. bit yikes.
     const shared_weights: bool = config_read.vocab_size > 0;
     config_read.vocab_size = @intCast(@abs(config_read.vocab_size));
-    const file_size = (try checkpoint.stat()).size;
+    const file_size = (try checkpoint.stat(io)).size;
     const config = config_read.config(); // convert to usize version
 
     log("config: {any}\n", .{config});
@@ -875,15 +881,12 @@ pub fn main() !void {
     log("SIMD vector size: {d}\n", .{DEFAULT_VECTOR_WIDTH});
     log("\n", .{});
 
-    const data: []align(mem.page_size) u8 = blk: {
-        const weights_size: usize = file_size - @sizeOf(ConfigReader);
-        const buffer = try allocator.alignedAlloc(u8, mem.page_size, weights_size);
-        const read_len = try checkpoint.readAll(buffer);
-        if (read_len != weights_size) {
-            std.debug.print("error: failed to read checkpoint file\n", .{});
-            std.process.exit(1);
-        }
-        checkpoint.close();
+    const data: []align(std.heap.page_size_min) u8 = blk: {
+        const weights_size = std.math.cast(usize, file_size - @sizeOf(ConfigReader)) orelse
+            return error.FileTooBig;
+        const buffer = try allocator.alignedAlloc(u8, .fromByteUnits(std.heap.page_size_min), weights_size);
+        try checkpoint_reader.interface.readSliceAll(buffer);
+        checkpoint.close(io);
         break :blk buffer;
         // mmap seems slower
         // break :blk try std.os.mmap(null, file_size, std.os.PROT.READ, std.os.MAP.PRIVATE, mapped_checkpoint.handle, 0);
@@ -893,7 +896,7 @@ pub fn main() !void {
     const weights = Weights.init(&config, data, shared_weights);
 
     // load the tokens for the model
-    const tokenizer = try Tokenizer.fromFile(tokenizer_path, config.vocab_size, allocator);
+    const tokenizer = try Tokenizer.fromFile(tokenizer_path, config.vocab_size, allocator, io);
     defer tokenizer.deinit(allocator);
 
     // initialize the run state for inference
@@ -912,7 +915,7 @@ pub fn main() !void {
 
     var next: usize = undefined; // the next token as predicted by the model
     var token: usize = 1; // 1 = <BOS> for llama2
-    var timer: ?std.time.Timer = null;
+    var timer: ?std.Io.Timestamp = null;
 
     // adjust the sequence length if needed
     seq_len = if (seq_len == 0) config.seq_len else seq_len;
@@ -963,12 +966,14 @@ pub fn main() !void {
 
         // if timer is null, start it
         if (timer == null) {
-            timer = try std.time.Timer.start();
+            timer = std.Io.Clock.awake.now(io);
         }
     }
-    const time = timer.?.read();
-    const tokens_per_ms = @as(f64, @floatFromInt(pos - 1)) / @as(f64, @floatFromInt(time / std.time.ns_per_ms));
-    const tokens_per_sec: u32 = @intFromFloat(tokens_per_ms * 1000.0);
+    const elapsed_ns = timer.?.untilNow(io, .awake).nanoseconds;
+    const tokens_per_sec: u32 = @intFromFloat(
+        @as(f64, @floatFromInt(pos - 1)) * std.time.ns_per_s /
+            @as(f64, @floatFromInt(elapsed_ns)),
+    );
 
     // print tokens per second
     log("\n\n{d} tokens per second\n", .{tokens_per_sec});
@@ -1051,7 +1056,7 @@ test "softmax" {
 
 test "bpe" {
     var allocator = std.testing.allocator;
-    const tokenizer = try Tokenizer.fromFile("tokenizer.bin", 32000, allocator);
+    const tokenizer = try Tokenizer.fromFile("tokenizer.bin", 32000, allocator, std.testing.io);
     defer tokenizer.deinit(allocator);
 
     try std.testing.expect(tokenizer.lookup("æ") == 233);

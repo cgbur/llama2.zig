@@ -19,9 +19,11 @@ pub fn build(b: *std.Build) void {
         .name = "llama2",
         // In this case the main source file is merely a path, however, in more
         // complicated build scripts, this could be a generated file.
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
 
     const disable_strip = b.option(bool, "nostrip", "Disable stripping binaries, default is to strip release binaries") orelse false;
@@ -62,9 +64,11 @@ pub fn build(b: *std.Build) void {
     // Creates a step for unit testing. This only builds the test executable
     // but does not run it.
     const unit_tests = b.addTest(.{
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
 
     const run_unit_tests = b.addRunArtifact(unit_tests);
@@ -75,7 +79,20 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
 
-    const fmt_include_paths = &.{ "src", "build.zig" };
+    const benchmarks_step = b.step("benchmarks", "Build standalone benchmarks");
+    for ([_][]const u8{ "rmsnorm", "sample", "softmax" }) |name| {
+        const benchmark = b.addExecutable(.{
+            .name = name,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(b.fmt("benchmarks/{s}.zig", .{name})),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        benchmarks_step.dependOn(&benchmark.step);
+    }
+
+    const fmt_include_paths = &.{ "src", "benchmarks", "build.zig", "build.zig.zon" };
     const do_fmt = b.addFmt(.{
         .paths = fmt_include_paths,
     });

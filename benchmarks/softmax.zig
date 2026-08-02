@@ -76,9 +76,11 @@ fn softmax(x: []f32) void {
     }
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+
     // generate 1mb of f32 random data
-    var rng = std.rand.DefaultPrng.init(0);
+    var rng = std.Random.DefaultPrng.init(0);
     var r = rng.random();
     const size: usize = 30_000;
     const num_runs: usize = 10000;
@@ -87,21 +89,20 @@ pub fn main() !void {
         val.* = r.float(f32);
     }
 
-    var timer = try std.time.Timer.start();
-    timer.reset();
     var data_copy: [size]f32 = undefined;
+    const scalar_started = std.Io.Clock.awake.now(io);
     for (0..num_runs) |_| {
         @memcpy(&data_copy, &data);
         softmax(&data_copy);
     }
-    const softmax_ns: u64 = timer.read();
+    const softmax_ns: u64 = @intCast(scalar_started.untilNow(io, .awake).nanoseconds);
 
-    timer.reset();
+    const vector_started = std.Io.Clock.awake.now(io);
     for (0..num_runs) |_| {
         @memcpy(&data_copy, &data);
         softmax_vectored(&data_copy);
     }
-    const softmax_vectored_ns: u64 = timer.read();
+    const softmax_vectored_ns: u64 = @intCast(vector_started.untilNow(io, .awake).nanoseconds);
 
     std.debug.print("{:15} ns/softmax\n", .{softmax_ns / num_runs});
     std.debug.print("{:15} ns/softmax_vectored\n", .{softmax_vectored_ns / num_runs});

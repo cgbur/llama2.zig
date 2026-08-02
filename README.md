@@ -33,6 +33,8 @@ can be found in the llama2.c repo.
 
 ## Usage
 
+This project targets Zig 0.16.0.
+
 After cloning the repo, run the following command for inference:
 
 ```sh
@@ -123,9 +125,8 @@ llama2 stories15M.bin -t 1.0 -p 0.9
 llama2 stories15M.bin -t 1.0 -p 0.9 -i "Once upon a time"
 ```
 
-```sh
-zig version -> 0.11.0-dev.4315+f5239677e
-```
+The performance figures above were recorded with Zig
+`0.11.0-dev.4315+f5239677e`.
 
 #### llama2.c
 

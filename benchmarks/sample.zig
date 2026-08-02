@@ -4,9 +4,7 @@ const DEFAULT_VECTOR_WIDTH = 8;
 
 fn sample(x: []f32) usize {
     assert(x.len > 0);
-    var rng = std.rand.DefaultPrng.init(0);
-    var r = rng.random().float(f32);
-    r = 0.9;
+    const r: f32 = 0.9;
 
     var cdf: f32 = 0.0;
     for (x, 0..) |*val, i| {
@@ -51,9 +49,11 @@ fn argmax(x: []f32) usize {
     }
     return maxi;
 }
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+
     // generate 1mb of f32 random data
-    var rng = std.rand.DefaultPrng.init(0);
+    var rng = std.Random.DefaultPrng.init(0);
     var r = rng.random();
     const size: usize = 32_000;
     const num_runs: usize = 10000;
@@ -64,23 +64,22 @@ pub fn main() !void {
     }
     data[size - 100] = 100.0;
     softmax(&data);
-    var timer = try std.time.Timer.start();
-    timer.reset();
     var data_copy: [size]f32 = undefined;
+    const sample_started = std.Io.Clock.awake.now(io);
     for (0..num_runs) |_| {
         @memcpy(&data_copy, &data);
-        var res = sample(&data_copy);
+        const res = sample(&data_copy);
         std.mem.doNotOptimizeAway(res);
     }
-    const sample_time: u64 = timer.read();
+    const sample_time: u64 = @intCast(sample_started.untilNow(io, .awake).nanoseconds);
 
-    timer.reset();
+    const argmax_started = std.Io.Clock.awake.now(io);
     for (0..num_runs) |_| {
         @memcpy(&data_copy, &data);
-        var res = argmax(&data_copy);
+        const res = argmax(&data_copy);
         std.mem.doNotOptimizeAway(res);
     }
-    const argmax_time: u64 = timer.read();
+    const argmax_time: u64 = @intCast(argmax_started.untilNow(io, .awake).nanoseconds);
 
     std.debug.print("{:15} ns/sample\n", .{sample_time / num_runs});
     std.debug.print("{:15} ns/argmax\n", .{argmax_time / num_runs});
